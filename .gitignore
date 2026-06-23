@@ -1,0 +1,13 @@
+node_modules/
+npm-debug.log*
+
+.env
+bet-*.json
+tmp_*.hex
+
+circuits/*/target/
+contracts/*/target/
+target/
+
+verifier/*.bin
+verifier/*.sol

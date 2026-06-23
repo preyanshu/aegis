@@ -1,0 +1,16 @@
+[package]
+name = "ultrahonk_soroban_verifier"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+soroban-sdk = { version = "26.1.0", features = ["alloc"] }
+
+[dev-dependencies]
+soroban-sdk = { version = "26.1.0", features = ["testutils", "alloc"] }
+
+[features]
+default = []
+std = []
+trace = []
+fixture-tests = []
