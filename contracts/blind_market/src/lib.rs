@@ -14,12 +14,19 @@ const MARKET_CONFIGS_KEY: Symbol = symbol_short!("MCFGS");
 const MARKET_STATES_KEY: Symbol = symbol_short!("MSTTS");
 const POSITIONS_KEY: Symbol = symbol_short!("POSITNS");
 
-const QUOTE_FLOOR_BPS: i128 = 3_500;
-const QUOTE_CAP_BPS: i128 = 6_500;
-const QUOTE_MID_BPS: i128 = 5_000;
 const QUOTE_SCALE_BPS: i128 = 10_000;
-const MAX_SWING_BPS: i128 = 1_500;
-const VIRTUAL_RESERVE: i128 = 500_000_000;
+const LMSR_MIN_BPS: i128 = 1;
+const LMSR_MAX_BPS: i128 = 9_999;
+const LMSR_X_MIN: i128 = -4_000;
+const LMSR_X_MAX: i128 = 4_000;
+const LMSR_STEP: i128 = 250;
+const LMSR_LIQUIDITY_PARAM: i128 = 10_000_000;
+const TRADE_SLICE: i128 = 100_000;
+const LMSR_PRICE_TABLE: [i128; 33] = [
+    180, 230, 293, 373, 474, 601, 759, 953, 1192, 1480, 1824, 2227, 2689, 3208, 3775, 4378,
+    5000, 5622, 6225, 6792, 7311, 7773, 8176, 8520, 8808, 9047, 9241, 9399, 9526, 9627, 9707,
+    9770, 9820,
+];
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -216,9 +223,12 @@ impl BlindMarket {
         let shares_out = Self::quote_buy_shares(&state, side_yes, usdc_amount);
         assert!(shares_out > 0, "trade too small");
         assert!(shares_out >= min_shares_out, "slippage exceeded");
+        let cost_in = Self::cost_to_buy(&state, side_yes, shares_out);
+        assert!(cost_in > 0, "trade too small");
+        assert!(cost_in <= usdc_amount, "trade exceeds budget");
 
         let usdc = token::Client::new(&env, &system.usdc_token);
-        usdc.transfer(&user, &env.current_contract_address(), &usdc_amount);
+        usdc.transfer(&user, &env.current_contract_address(), &cost_in);
 
         if side_yes {
             position.yes_shares += shares_out;
@@ -227,7 +237,7 @@ impl BlindMarket {
             position.no_shares += shares_out;
             state.no_shares_outstanding += shares_out;
         }
-        state.total_committed += usdc_amount;
+        state.total_committed += cost_in;
         Self::refresh_quotes(&mut state);
 
         Self::store_position(&env, &market_id, &user, &position);
@@ -235,7 +245,7 @@ impl BlindMarket {
 
         env.events().publish(
             (symbol_short!("buy"),),
-            (market_id, user, side_yes, usdc_amount, shares_out),
+            (market_id, user, side_yes, cost_in, shares_out),
         );
 
         shares_out
@@ -459,8 +469,8 @@ impl BlindMarket {
     fn empty_state() -> MarketState {
         MarketState {
             total_committed: 0,
-            public_yes_quote_bps: QUOTE_MID_BPS,
-            public_no_quote_bps: QUOTE_MID_BPS,
+            public_yes_quote_bps: QUOTE_SCALE_BPS / 2,
+            public_no_quote_bps: QUOTE_SCALE_BPS / 2,
             yes_shares_outstanding: 0,
             no_shares_outstanding: 0,
             resolved: false,
@@ -475,45 +485,150 @@ impl BlindMarket {
 
     fn refresh_quotes(state: &mut MarketState) {
         let (yes_quote, no_quote) =
-            Self::public_quote_bps(state.yes_shares_outstanding, state.no_shares_outstanding);
+            Self::lmsr_quote_bps(state.yes_shares_outstanding, state.no_shares_outstanding);
         state.public_yes_quote_bps = yes_quote;
         state.public_no_quote_bps = no_quote;
     }
 
     fn quote_buy_shares(state: &MarketState, side_yes: bool, usdc_amount: i128) -> i128 {
-        let current_quote = Self::quote_for_side(state, side_yes);
-        assert!(current_quote > 0, "invalid quote");
-        (usdc_amount * QUOTE_SCALE_BPS) / current_quote
+        let mut low = 0i128;
+        let mut high = 1i128;
+        let max_high = usdc_amount.saturating_mul(QUOTE_SCALE_BPS);
+
+        while high < max_high && Self::cost_to_buy(state, side_yes, high) <= usdc_amount {
+            let next = high.saturating_mul(2);
+            if next <= high {
+                break;
+            }
+            high = if next > max_high { max_high } else { next };
+        }
+
+        while low < high {
+            let mid = low + ((high - low + 1) / 2);
+            if Self::cost_to_buy(state, side_yes, mid) <= usdc_amount {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+
+        low
     }
 
     fn quote_sell_value(state: &MarketState, side_yes: bool, share_amount: i128) -> i128 {
-        let current_quote = Self::quote_for_side(state, side_yes);
-        assert!(current_quote > 0, "invalid quote");
-        (share_amount * current_quote) / QUOTE_SCALE_BPS
+        Self::refund_for_sale(state, side_yes, share_amount)
     }
 
-    fn quote_for_side(state: &MarketState, side_yes: bool) -> i128 {
-        if side_yes {
-            state.public_yes_quote_bps
-        } else {
-            state.public_no_quote_bps
-        }
-    }
-
-    fn public_quote_bps(yes_shares: i128, no_shares: i128) -> (i128, i128) {
-        let depth = yes_shares + no_shares + VIRTUAL_RESERVE;
-        let imbalance = yes_shares - no_shares;
-        let swing = (imbalance * MAX_SWING_BPS) / depth;
-        let yes_quote = Self::clamp_bps(QUOTE_MID_BPS + swing);
+    fn lmsr_quote_bps(yes_shares: i128, no_shares: i128) -> (i128, i128) {
+        let yes_quote = Self::interpolated_yes_quote_bps(yes_shares - no_shares);
         let no_quote = QUOTE_SCALE_BPS - yes_quote;
         (yes_quote, no_quote)
     }
 
+    fn interpolated_yes_quote_bps(delta: i128) -> i128 {
+        let scaled = (delta * 1_000) / LMSR_LIQUIDITY_PARAM;
+        let clamped = if scaled < LMSR_X_MIN {
+            LMSR_X_MIN
+        } else if scaled > LMSR_X_MAX {
+            LMSR_X_MAX
+        } else {
+            scaled
+        };
+
+        let offset = clamped - LMSR_X_MIN;
+        let index = (offset / LMSR_STEP) as usize;
+        let remainder = offset % LMSR_STEP;
+        if remainder == 0 || index >= LMSR_PRICE_TABLE.len() - 1 {
+            return Self::clamp_bps(LMSR_PRICE_TABLE[index]);
+        }
+
+        let left = LMSR_PRICE_TABLE[index];
+        let right = LMSR_PRICE_TABLE[index + 1];
+        let interpolated = left + ((right - left) * remainder) / LMSR_STEP;
+        Self::clamp_bps(interpolated)
+    }
+
+    fn cost_to_buy(state: &MarketState, side_yes: bool, share_amount: i128) -> i128 {
+        let mut remaining = share_amount;
+        let mut filled = 0i128;
+        let mut total_cost = 0i128;
+
+        while remaining > 0 {
+            let chunk = if remaining > TRADE_SLICE {
+                TRADE_SLICE
+            } else {
+                remaining
+            };
+
+            let midpoint = filled + (chunk / 2);
+            let (yes_mid, no_mid) = if side_yes {
+                (
+                    state.yes_shares_outstanding + midpoint,
+                    state.no_shares_outstanding,
+                )
+            } else {
+                (
+                    state.yes_shares_outstanding,
+                    state.no_shares_outstanding + midpoint,
+                )
+            };
+            let price_bps = if side_yes {
+                Self::lmsr_quote_bps(yes_mid, no_mid).0
+            } else {
+                Self::lmsr_quote_bps(yes_mid, no_mid).1
+            };
+
+            total_cost += (chunk * price_bps + QUOTE_SCALE_BPS - 1) / QUOTE_SCALE_BPS;
+            remaining -= chunk;
+            filled += chunk;
+        }
+
+        total_cost
+    }
+
+    fn refund_for_sale(state: &MarketState, side_yes: bool, share_amount: i128) -> i128 {
+        let mut remaining = share_amount;
+        let mut sold = 0i128;
+        let mut total_refund = 0i128;
+
+        while remaining > 0 {
+            let chunk = if remaining > TRADE_SLICE {
+                TRADE_SLICE
+            } else {
+                remaining
+            };
+
+            let midpoint = sold + (chunk / 2);
+            let (yes_mid, no_mid) = if side_yes {
+                (
+                    state.yes_shares_outstanding - midpoint,
+                    state.no_shares_outstanding,
+                )
+            } else {
+                (
+                    state.yes_shares_outstanding,
+                    state.no_shares_outstanding - midpoint,
+                )
+            };
+            let price_bps = if side_yes {
+                Self::lmsr_quote_bps(yes_mid, no_mid).0
+            } else {
+                Self::lmsr_quote_bps(yes_mid, no_mid).1
+            };
+
+            total_refund += (chunk * price_bps) / QUOTE_SCALE_BPS;
+            remaining -= chunk;
+            sold += chunk;
+        }
+
+        total_refund
+    }
+
     fn clamp_bps(value: i128) -> i128 {
-        if value < QUOTE_FLOOR_BPS {
-            QUOTE_FLOOR_BPS
-        } else if value > QUOTE_CAP_BPS {
-            QUOTE_CAP_BPS
+        if value < LMSR_MIN_BPS {
+            LMSR_MIN_BPS
+        } else if value > LMSR_MAX_BPS {
+            LMSR_MAX_BPS
         } else {
             value
         }
