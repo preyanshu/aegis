@@ -4,20 +4,22 @@ mod reflector_pulse;
 
 use reflector_pulse::{Asset as ReflectorAsset, ReflectorPulseClient};
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, token, Address, Bytes, BytesN, Env,
-    IntoVal, InvokeError, Map, String, Symbol, Val, Vec as SorobanVec,
+    contract, contractimpl, contracttype, symbol_short, token, Address, Bytes, BytesN, Env, Map,
+    String, Symbol, Vec as SorobanVec,
 };
 
 const SYSTEM_KEY: Symbol = symbol_short!("SYSTEM");
 const MARKET_IDS_KEY: Symbol = symbol_short!("MIDS");
 const MARKET_CONFIGS_KEY: Symbol = symbol_short!("MCFGS");
 const MARKET_STATES_KEY: Symbol = symbol_short!("MSTTS");
-const COMMITMENTS_KEY: Symbol = symbol_short!("COMMITS");
-const NULLIFIERS_KEY: Symbol = symbol_short!("NULLS");
-const CLAIMS_KEY: Symbol = symbol_short!("CLAIMS");
-const QUOTE_FLOOR_BPS: u32 = 2_500;
-const QUOTE_CAP_BPS: u32 = 7_500;
-const VIRTUAL_RESERVE: i128 = 5_000_000;
+const POSITIONS_KEY: Symbol = symbol_short!("POSITNS");
+
+const QUOTE_FLOOR_BPS: i128 = 3_500;
+const QUOTE_CAP_BPS: i128 = 6_500;
+const QUOTE_MID_BPS: i128 = 5_000;
+const QUOTE_SCALE_BPS: i128 = 10_000;
+const MAX_SWING_BPS: i128 = 1_500;
+const VIRTUAL_RESERVE: i128 = 500_000_000;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -47,6 +49,8 @@ pub struct MarketState {
     pub total_committed: i128,
     pub public_yes_quote_bps: i128,
     pub public_no_quote_bps: i128,
+    pub yes_shares_outstanding: i128,
+    pub no_shares_outstanding: i128,
     pub resolved: bool,
     pub claims_finalized: bool,
     pub outcome: bool,
@@ -65,41 +69,17 @@ pub struct MarketView {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CommitmentKey {
+pub struct PositionKey {
     pub market_id: BytesN<32>,
-    pub commitment: BytesN<32>,
+    pub user: Address,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NullifierKey {
-    pub market_id: BytesN<32>,
-    pub nullifier: BytesN<32>,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ClaimKey {
-    pub market_id: BytesN<32>,
-    pub nullifier: BytesN<32>,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CommitmentRecord {
-    pub market_id: BytesN<32>,
-    pub commitment: BytesN<32>,
-    pub amount: i128,
-    pub timestamp: u64,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ClaimRecord {
-    pub market_id: BytesN<32>,
-    pub claimant: Address,
-    pub commitment: BytesN<32>,
-    pub amount: i128,
+pub struct Position {
+    pub yes_shares: i128,
+    pub no_shares: i128,
+    pub claimed: bool,
 }
 
 #[contract]
@@ -114,7 +94,6 @@ impl BlindMarket {
         reflector_contract: Address,
     ) {
         admin.require_auth();
-
         assert!(
             !env.storage().instance().has(&SYSTEM_KEY),
             "already initialized",
@@ -141,15 +120,9 @@ impl BlindMarket {
             &Map::<BytesN<32>, MarketState>::new(&env),
         );
         env.storage().instance().set(
-            &COMMITMENTS_KEY,
-            &Map::<CommitmentKey, CommitmentRecord>::new(&env),
+            &POSITIONS_KEY,
+            &Map::<PositionKey, Position>::new(&env),
         );
-        env.storage()
-            .instance()
-            .set(&NULLIFIERS_KEY, &Map::<NullifierKey, bool>::new(&env));
-        env.storage()
-            .instance()
-            .set(&CLAIMS_KEY, &Map::<ClaimKey, ClaimRecord>::new(&env));
     }
 
     pub fn set_verifiers(
@@ -179,7 +152,6 @@ impl BlindMarket {
     ) {
         creator.require_auth();
 
-        let system: SystemConfig = env.storage().instance().get(&SYSTEM_KEY).unwrap();
         let mut configs: Map<BytesN<32>, MarketConfig> =
             env.storage().instance().get(&MARKET_CONFIGS_KEY).unwrap();
         let mut states: Map<BytesN<32>, MarketState> =
@@ -191,10 +163,9 @@ impl BlindMarket {
             end_timestamp > env.ledger().timestamp(),
             "end must be in the future",
         );
-        assert!(fee_bps <= 1000, "fee too high");
+        assert!(fee_bps <= 1_000, "fee too high");
         assert!(min_bet > 0, "min_bet must be positive");
         assert!(max_bet >= min_bet, "max_bet below min_bet");
-        assert!(system.commit_verifier != env.current_contract_address(), "verifiers not set");
 
         let config = MarketConfig {
             creator,
@@ -219,65 +190,112 @@ impl BlindMarket {
             .publish((symbol_short!("mk_create"),), (market_id, target_price, end_timestamp));
     }
 
-    pub fn commit(
+    pub fn buy(
         env: Env,
         market_id: BytesN<32>,
         user: Address,
-        commitment: BytesN<32>,
-        proof: Bytes,
-        amount: i128,
-    ) {
+        side_yes: bool,
+        usdc_amount: i128,
+        min_shares_out: i128,
+    ) -> i128 {
         user.require_auth();
 
         let system: SystemConfig = env.storage().instance().get(&SYSTEM_KEY).unwrap();
         let config = Self::get_market_config_internal(&env, &market_id);
         let mut state = Self::get_market_state_internal(&env, &market_id);
+        let mut position = Self::get_position_internal(&env, &market_id, &user);
 
         assert!(
             env.ledger().timestamp() < config.end_timestamp,
             "market has closed",
         );
         assert!(!state.resolved, "market already resolved");
-        assert!(amount >= config.min_bet, "below minimum bet");
-        assert!(amount <= config.max_bet, "above maximum bet");
+        assert!(usdc_amount >= config.min_bet, "below minimum bet");
+        assert!(usdc_amount <= config.max_bet, "above maximum bet");
 
-        let mut commitments: Map<CommitmentKey, CommitmentRecord> =
-            env.storage().instance().get(&COMMITMENTS_KEY).unwrap();
-        let commitment_key = CommitmentKey {
-            market_id: market_id.clone(),
-            commitment: commitment.clone(),
-        };
-        assert!(
-            !commitments.contains_key(commitment_key.clone()),
-            "commitment already exists",
-        );
-
-        Self::verify_commit_proof(&env, &system, &config, &commitment, amount, &proof);
+        let shares_out = Self::quote_buy_shares(&state, side_yes, usdc_amount);
+        assert!(shares_out > 0, "trade too small");
+        assert!(shares_out >= min_shares_out, "slippage exceeded");
 
         let usdc = token::Client::new(&env, &system.usdc_token);
-        usdc.transfer(&user, &env.current_contract_address(), &amount);
+        usdc.transfer(&user, &env.current_contract_address(), &usdc_amount);
 
-        commitments.set(
-            commitment_key,
-            CommitmentRecord {
-                market_id: market_id.clone(),
-                commitment: commitment.clone(),
-                amount,
-                timestamp: env.ledger().timestamp(),
-            },
-        );
-        env.storage().instance().set(&COMMITMENTS_KEY, &commitments);
+        if side_yes {
+            position.yes_shares += shares_out;
+            state.yes_shares_outstanding += shares_out;
+        } else {
+            position.no_shares += shares_out;
+            state.no_shares_outstanding += shares_out;
+        }
+        state.total_committed += usdc_amount;
+        Self::refresh_quotes(&mut state);
 
-        state.total_committed += amount;
-        let (yes_quote_bps, no_quote_bps) = Self::public_quote_bps(state.total_committed);
-        state.public_yes_quote_bps = yes_quote_bps as i128;
-        state.public_no_quote_bps = no_quote_bps as i128;
+        Self::store_position(&env, &market_id, &user, &position);
         Self::store_market_state(&env, &market_id, &state);
 
         env.events().publish(
-            (symbol_short!("committed"),),
-            (market_id, user, commitment, amount),
+            (symbol_short!("buy"),),
+            (market_id, user, side_yes, usdc_amount, shares_out),
         );
+
+        shares_out
+    }
+
+    pub fn sell(
+        env: Env,
+        market_id: BytesN<32>,
+        user: Address,
+        side_yes: bool,
+        share_amount: i128,
+        min_usdc_out: i128,
+    ) -> i128 {
+        user.require_auth();
+
+        let system: SystemConfig = env.storage().instance().get(&SYSTEM_KEY).unwrap();
+        let config = Self::get_market_config_internal(&env, &market_id);
+        let mut state = Self::get_market_state_internal(&env, &market_id);
+        let mut position = Self::get_position_internal(&env, &market_id, &user);
+
+        assert!(
+            env.ledger().timestamp() < config.end_timestamp,
+            "market has closed",
+        );
+        assert!(!state.resolved, "market already resolved");
+        assert!(share_amount > 0, "share_amount must be positive");
+
+        if side_yes {
+            assert!(position.yes_shares >= share_amount, "insufficient YES shares");
+        } else {
+            assert!(position.no_shares >= share_amount, "insufficient NO shares");
+        }
+
+        let usdc_out = Self::quote_sell_value(&state, side_yes, share_amount);
+        assert!(usdc_out > 0, "trade too small");
+        assert!(usdc_out >= min_usdc_out, "slippage exceeded");
+        assert!(state.total_committed >= usdc_out, "market undercollateralized");
+
+        if side_yes {
+            position.yes_shares -= share_amount;
+            state.yes_shares_outstanding -= share_amount;
+        } else {
+            position.no_shares -= share_amount;
+            state.no_shares_outstanding -= share_amount;
+        }
+        state.total_committed -= usdc_out;
+        Self::refresh_quotes(&mut state);
+
+        Self::store_position(&env, &market_id, &user, &position);
+        Self::store_market_state(&env, &market_id, &state);
+
+        let usdc = token::Client::new(&env, &system.usdc_token);
+        usdc.transfer(&env.current_contract_address(), &user, &usdc_out);
+
+        env.events().publish(
+            (symbol_short!("sell"),),
+            (market_id, user, side_yes, share_amount, usdc_out),
+        );
+
+        usdc_out
     }
 
     pub fn resolve(env: Env, market_id: BytesN<32>) {
@@ -291,14 +309,21 @@ impl BlindMarket {
         );
         assert!(!state.resolved, "already resolved");
 
-        let btc_price = Self::get_reflector_price(&env, &system.reflector_contract);
-        let outcome = btc_price >= config.target_price;
-        let fee_amount = (state.total_committed * config.fee_bps as i128) / 10_000;
+        let oracle_price = Self::get_reflector_price(&env, &system.reflector_contract);
+        let outcome = oracle_price >= config.target_price;
+        let fee_amount = (state.total_committed * config.fee_bps as i128) / QUOTE_SCALE_BPS;
 
         state.resolved = true;
+        state.claims_finalized = true;
         state.outcome = outcome;
-        state.outcome_price = btc_price;
+        state.outcome_price = oracle_price;
         state.distributable_pot = state.total_committed - fee_amount;
+        state.winning_pool = if outcome {
+            state.yes_shares_outstanding
+        } else {
+            state.no_shares_outstanding
+        };
+        state.registered_claim_amount = state.winning_pool;
         Self::store_market_state(&env, &market_id, &state);
 
         if fee_amount > 0 {
@@ -308,138 +333,48 @@ impl BlindMarket {
 
         env.events().publish(
             (symbol_short!("resolved"),),
-            (market_id, outcome, btc_price, config.target_price),
+            (market_id, outcome, oracle_price, config.target_price, state.winning_pool),
         );
     }
 
-    pub fn register_win(
-        env: Env,
-        market_id: BytesN<32>,
-        user: Address,
-        commitment: BytesN<32>,
-        amount: i128,
-        nullifier: BytesN<32>,
-        proof: Bytes,
-    ) {
-        user.require_auth();
-
-        let system: SystemConfig = env.storage().instance().get(&SYSTEM_KEY).unwrap();
-        let config = Self::get_market_config_internal(&env, &market_id);
-        let mut state = Self::get_market_state_internal(&env, &market_id);
-        assert!(state.resolved, "market not resolved yet");
-        assert!(!state.claims_finalized, "claims already finalized");
-
-        let commitments: Map<CommitmentKey, CommitmentRecord> =
-            env.storage().instance().get(&COMMITMENTS_KEY).unwrap();
-        let commitment_key = CommitmentKey {
-            market_id: market_id.clone(),
-            commitment: commitment.clone(),
-        };
-        let record = commitments
-            .get(commitment_key.clone())
-            .expect("commitment not found");
-        assert_eq!(record.amount, amount, "amount mismatch");
-
-        let mut nullifiers: Map<NullifierKey, bool> =
-            env.storage().instance().get(&NULLIFIERS_KEY).unwrap();
-        let nullifier_key = NullifierKey {
-            market_id: market_id.clone(),
-            nullifier: nullifier.clone(),
-        };
-        assert!(
-            !nullifiers.contains_key(nullifier_key.clone()),
-            "already claimed",
-        );
-
-        Self::verify_claim_proof(
-            &env,
-            &system,
-            &config,
-            &commitment,
-            amount,
-            state.outcome,
-            &nullifier,
-            &proof,
-        );
-
-        nullifiers.set(nullifier_key.clone(), true);
-        env.storage().instance().set(&NULLIFIERS_KEY, &nullifiers);
-
-        let mut claims: Map<ClaimKey, ClaimRecord> =
-            env.storage().instance().get(&CLAIMS_KEY).unwrap();
-        let claim_key = ClaimKey {
-            market_id: market_id.clone(),
-            nullifier: nullifier.clone(),
-        };
-        assert!(!claims.contains_key(claim_key.clone()), "claim already stored");
-        claims.set(
-            claim_key,
-            ClaimRecord {
-                market_id: market_id.clone(),
-                claimant: user.clone(),
-                commitment: commitment.clone(),
-                amount,
-            },
-        );
-        env.storage().instance().set(&CLAIMS_KEY, &claims);
-
-        state.registered_claim_amount += amount;
-        Self::store_market_state(&env, &market_id, &state);
-
-        env.events().publish(
-            (symbol_short!("reg_win"),),
-            (market_id, user, commitment, amount, nullifier),
-        );
-    }
-
-    pub fn finalize_claims(env: Env, market_id: BytesN<32>) {
-        let system: SystemConfig = env.storage().instance().get(&SYSTEM_KEY).unwrap();
-        system.admin.require_auth();
-
-        let mut state = Self::get_market_state_internal(&env, &market_id);
-        assert!(state.resolved, "market not resolved yet");
-        assert!(!state.claims_finalized, "claims already finalized");
-
-        let winning_pool = state.registered_claim_amount;
-        assert!(winning_pool > 0, "no winners registered");
-
-        state.claims_finalized = true;
-        state.winning_pool = winning_pool;
-        Self::store_market_state(&env, &market_id, &state);
-
-        env.events().publish(
-            (symbol_short!("finalized"),),
-            (market_id, winning_pool, state.distributable_pot),
-        );
-    }
-
-    pub fn collect(env: Env, market_id: BytesN<32>, user: Address, nullifier: BytesN<32>) {
+    pub fn collect_position(env: Env, market_id: BytesN<32>, user: Address) -> i128 {
         user.require_auth();
 
         let system: SystemConfig = env.storage().instance().get(&SYSTEM_KEY).unwrap();
         let state = Self::get_market_state_internal(&env, &market_id);
-        assert!(state.resolved, "not resolved");
-        assert!(state.claims_finalized, "claims not finalized");
+        let mut position = Self::get_position_internal(&env, &market_id, &user);
 
-        let claims: Map<ClaimKey, ClaimRecord> = env.storage().instance().get(&CLAIMS_KEY).unwrap();
-        let claim_key = ClaimKey {
-            market_id: market_id.clone(),
-            nullifier: nullifier.clone(),
+        assert!(state.resolved, "market not resolved");
+        assert!(state.winning_pool > 0, "no winning shares");
+        assert!(!position.claimed, "position already claimed");
+
+        let winning_shares = if state.outcome {
+            position.yes_shares
+        } else {
+            position.no_shares
         };
-        let claim = claims.get(claim_key.clone()).expect("no pending payout");
-        assert_eq!(claim.claimant, user, "claimant mismatch");
-        assert!(state.winning_pool > 0, "winning pool not set");
+        assert!(winning_shares > 0, "no winning shares for user");
 
-        let payout = (claim.amount * state.distributable_pot) / state.winning_pool;
-        let mut claims = claims;
-        claims.remove(claim_key);
-        env.storage().instance().set(&CLAIMS_KEY, &claims);
+        let payout = (winning_shares * state.distributable_pot) / state.winning_pool;
+        assert!(payout > 0, "nothing to collect");
+
+        position.claimed = true;
+        Self::store_position(&env, &market_id, &user, &position);
 
         let usdc = token::Client::new(&env, &system.usdc_token);
         usdc.transfer(&env.current_contract_address(), &user, &payout);
 
         env.events()
-            .publish((symbol_short!("collected"),), (market_id, user, payout, nullifier));
+            .publish((symbol_short!("collect"),), (market_id, user, payout, winning_shares));
+
+        payout
+    }
+
+    pub fn finalize_claims(env: Env, market_id: BytesN<32>) {
+        let system: SystemConfig = env.storage().instance().get(&SYSTEM_KEY).unwrap();
+        system.admin.require_auth();
+        let state = Self::get_market_state_internal(&env, &market_id);
+        assert!(state.resolved, "market not resolved");
     }
 
     pub fn get_system_config(env: Env) -> SystemConfig {
@@ -470,22 +405,8 @@ impl BlindMarket {
         out
     }
 
-    pub fn is_commitment_stored(env: Env, market_id: BytesN<32>, commitment: BytesN<32>) -> bool {
-        let commitments: Map<CommitmentKey, CommitmentRecord> =
-            env.storage().instance().get(&COMMITMENTS_KEY).unwrap();
-        commitments.contains_key(CommitmentKey {
-            market_id,
-            commitment,
-        })
-    }
-
-    pub fn is_nullifier_spent(env: Env, market_id: BytesN<32>, nullifier: BytesN<32>) -> bool {
-        let nullifiers: Map<NullifierKey, bool> =
-            env.storage().instance().get(&NULLIFIERS_KEY).unwrap();
-        nullifiers.contains_key(NullifierKey {
-            market_id,
-            nullifier,
-        })
+    pub fn get_position(env: Env, market_id: BytesN<32>, user: Address) -> Position {
+        Self::get_position_internal(&env, &market_id, &user)
     }
 
     fn get_market_config_internal(env: &Env, market_id: &BytesN<32>) -> MarketConfig {
@@ -507,11 +428,41 @@ impl BlindMarket {
         env.storage().instance().set(&MARKET_STATES_KEY, &states);
     }
 
+    fn get_position_internal(env: &Env, market_id: &BytesN<32>, user: &Address) -> Position {
+        let positions: Map<PositionKey, Position> =
+            env.storage().instance().get(&POSITIONS_KEY).unwrap();
+        positions
+            .get(PositionKey {
+                market_id: market_id.clone(),
+                user: user.clone(),
+            })
+            .unwrap_or(Position {
+                yes_shares: 0,
+                no_shares: 0,
+                claimed: false,
+            })
+    }
+
+    fn store_position(env: &Env, market_id: &BytesN<32>, user: &Address, position: &Position) {
+        let mut positions: Map<PositionKey, Position> =
+            env.storage().instance().get(&POSITIONS_KEY).unwrap();
+        positions.set(
+            PositionKey {
+                market_id: market_id.clone(),
+                user: user.clone(),
+            },
+            position.clone(),
+        );
+        env.storage().instance().set(&POSITIONS_KEY, &positions);
+    }
+
     fn empty_state() -> MarketState {
         MarketState {
             total_committed: 0,
-            public_yes_quote_bps: 5_000,
-            public_no_quote_bps: 5_000,
+            public_yes_quote_bps: QUOTE_MID_BPS,
+            public_no_quote_bps: QUOTE_MID_BPS,
+            yes_shares_outstanding: 0,
+            no_shares_outstanding: 0,
             resolved: false,
             claims_finalized: false,
             outcome: false,
@@ -522,31 +473,50 @@ impl BlindMarket {
         }
     }
 
-    fn verify_commit_proof(
-        env: &Env,
-        system: &SystemConfig,
-        config: &MarketConfig,
-        commitment: &BytesN<32>,
-        amount: i128,
-        proof: &Bytes,
-    ) {
-        let public_inputs =
-            Self::pack_commit_public_inputs(env, amount, commitment, config.min_bet, config.max_bet);
-        Self::verify_with_contract(env, &system.commit_verifier, public_inputs, proof.clone());
+    fn refresh_quotes(state: &mut MarketState) {
+        let (yes_quote, no_quote) =
+            Self::public_quote_bps(state.yes_shares_outstanding, state.no_shares_outstanding);
+        state.public_yes_quote_bps = yes_quote;
+        state.public_no_quote_bps = no_quote;
     }
 
-    fn verify_claim_proof(
-        env: &Env,
-        system: &SystemConfig,
-        _config: &MarketConfig,
-        commitment: &BytesN<32>,
-        amount: i128,
-        outcome: bool,
-        nullifier: &BytesN<32>,
-        proof: &Bytes,
-    ) {
-        let public_inputs = Self::pack_claim_public_inputs(env, amount, commitment, outcome, nullifier);
-        Self::verify_with_contract(env, &system.claim_verifier, public_inputs, proof.clone());
+    fn quote_buy_shares(state: &MarketState, side_yes: bool, usdc_amount: i128) -> i128 {
+        let current_quote = Self::quote_for_side(state, side_yes);
+        assert!(current_quote > 0, "invalid quote");
+        (usdc_amount * QUOTE_SCALE_BPS) / current_quote
+    }
+
+    fn quote_sell_value(state: &MarketState, side_yes: bool, share_amount: i128) -> i128 {
+        let current_quote = Self::quote_for_side(state, side_yes);
+        assert!(current_quote > 0, "invalid quote");
+        (share_amount * current_quote) / QUOTE_SCALE_BPS
+    }
+
+    fn quote_for_side(state: &MarketState, side_yes: bool) -> i128 {
+        if side_yes {
+            state.public_yes_quote_bps
+        } else {
+            state.public_no_quote_bps
+        }
+    }
+
+    fn public_quote_bps(yes_shares: i128, no_shares: i128) -> (i128, i128) {
+        let depth = yes_shares + no_shares + VIRTUAL_RESERVE;
+        let imbalance = yes_shares - no_shares;
+        let swing = (imbalance * MAX_SWING_BPS) / depth;
+        let yes_quote = Self::clamp_bps(QUOTE_MID_BPS + swing);
+        let no_quote = QUOTE_SCALE_BPS - yes_quote;
+        (yes_quote, no_quote)
+    }
+
+    fn clamp_bps(value: i128) -> i128 {
+        if value < QUOTE_FLOOR_BPS {
+            QUOTE_FLOOR_BPS
+        } else if value > QUOTE_CAP_BPS {
+            QUOTE_CAP_BPS
+        } else {
+            value
+        }
     }
 
     fn get_reflector_price(env: &Env, reflector_addr: &Address) -> i128 {
@@ -566,72 +536,4 @@ impl BlindMarket {
         recent.price
     }
 
-    fn verify_with_contract(env: &Env, verifier: &Address, public_inputs: Bytes, proof: Bytes) {
-        let mut args: SorobanVec<Val> = SorobanVec::new(env);
-        args.push_back(public_inputs.into_val(env));
-        args.push_back(proof.into_val(env));
-        match env.try_invoke_contract::<(), InvokeError>(
-            verifier,
-            &Symbol::new(env, "verify_proof"),
-            args,
-        ) {
-            Ok(Ok(())) => {}
-            Ok(Err(_)) | Err(_) => panic!("verification failed"),
-        }
-    }
-
-    fn pack_commit_public_inputs(
-        env: &Env,
-        amount: i128,
-        commitment: &BytesN<32>,
-        min_bet: i128,
-        max_bet: i128,
-    ) -> Bytes {
-        let mut out = Bytes::new(env);
-        out.append(&Self::pack_i128(env, amount));
-        out.append(&Bytes::from_slice(env, &commitment.to_array()));
-        out.append(&Self::pack_i128(env, min_bet));
-        out.append(&Self::pack_i128(env, max_bet));
-        out
-    }
-
-    fn pack_claim_public_inputs(
-        env: &Env,
-        amount: i128,
-        commitment: &BytesN<32>,
-        outcome: bool,
-        nullifier: &BytesN<32>,
-    ) -> Bytes {
-        let mut out = Bytes::new(env);
-        out.append(&Self::pack_i128(env, amount));
-        out.append(&Bytes::from_slice(env, &commitment.to_array()));
-        out.append(&Self::pack_bool(env, outcome));
-        out.append(&Bytes::from_slice(env, &nullifier.to_array()));
-        out
-    }
-
-    fn pack_bool(env: &Env, value: bool) -> Bytes {
-        let mut arr = [0u8; 32];
-        arr[31] = if value { 1 } else { 0 };
-        Bytes::from_slice(env, &arr)
-    }
-
-    fn pack_i128(env: &Env, value: i128) -> Bytes {
-        let mut arr = [0u8; 32];
-        arr[16..].copy_from_slice(&value.to_be_bytes());
-        Bytes::from_slice(env, &arr)
-    }
-
-    fn public_quote_bps(total_committed: i128) -> (u32, u32) {
-        let total = total_committed.max(0);
-        let depth = total + VIRTUAL_RESERVE;
-        let swing = if depth <= 0 {
-            0
-        } else {
-            ((total * 1_500) / depth).clamp(0, 1_500)
-        };
-        let yes = (5_000i128 + swing).clamp(QUOTE_FLOOR_BPS as i128, QUOTE_CAP_BPS as i128) as u32;
-        let no = (10_000i128 - yes as i128).clamp(QUOTE_FLOOR_BPS as i128, QUOTE_CAP_BPS as i128) as u32;
-        (yes, no)
-    }
 }

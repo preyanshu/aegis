@@ -28,6 +28,8 @@ export type MarketState = {
   total_committed: bigint;
   public_yes_quote_bps: bigint;
   public_no_quote_bps: bigint;
+  yes_shares_outstanding: bigint;
+  no_shares_outstanding: bigint;
   resolved: boolean;
   claims_finalized: boolean;
   outcome: boolean;
@@ -50,22 +52,10 @@ export type SystemConfig = {
   claim_verifier: string;
 };
 
-export type CommitData = {
-  marketId: string;
-  side: "YES" | "NO";
-  amountUsdc: number;
-  amountInStroops: string;
-  salt: string;
-  commitment: string;
-  nullifier: string;
-  txHash: string;
-  walletLabel: string;
-};
-
-export type ClaimData = CommitData & {
-  outcome: "YES" | "NO";
-  registerTxHash?: string;
-  collectTxHash?: string;
+export type Position = {
+  yes_shares: bigint;
+  no_shares: bigint;
+  claimed: boolean;
 };
 
 export type TransactionResult = {
@@ -180,6 +170,8 @@ function normalizeMarketState(raw: any): MarketState {
     total_committed: asBigInt(raw.total_committed),
     public_yes_quote_bps: asBigInt(raw.public_yes_quote_bps),
     public_no_quote_bps: asBigInt(raw.public_no_quote_bps),
+    yes_shares_outstanding: asBigInt(raw.yes_shares_outstanding),
+    no_shares_outstanding: asBigInt(raw.no_shares_outstanding),
     resolved: Boolean(raw.resolved),
     claims_finalized: Boolean(raw.claims_finalized),
     outcome: Boolean(raw.outcome),
@@ -194,6 +186,14 @@ function normalizeView(raw: any): MarketView {
   return {
     config: normalizeMarketConfig(raw.config),
     state: normalizeMarketState(raw.state),
+  };
+}
+
+function normalizePosition(raw: any): Position {
+  return {
+    yes_shares: asBigInt(raw.yes_shares),
+    no_shares: asBigInt(raw.no_shares),
+    claimed: Boolean(raw.claimed),
   };
 }
 
@@ -299,12 +299,9 @@ export async function loadMarketState(marketId: string, signerLabel = "admin") {
   return normalizeMarketState(raw);
 }
 
-export async function isCommitmentStored(marketId: string, commitment: string, signerLabel = "admin") {
-  return read<boolean>("is_commitment_stored", [bytes32ScVal(marketId), bytes32ScVal(commitment)], signerLabel);
-}
-
-export async function isNullifierSpent(marketId: string, nullifier: string, signerLabel = "admin") {
-  return read<boolean>("is_nullifier_spent", [bytes32ScVal(marketId), bytes32ScVal(nullifier)], signerLabel);
+export async function loadPosition(marketId: string, address: string, signerLabel = "admin") {
+  const raw = await read<any>("get_position", [bytes32ScVal(marketId), scValAddress(address)], signerLabel);
+  return normalizePosition(raw);
 }
 
 export async function createMarket(
@@ -335,23 +332,45 @@ export async function createMarket(
   );
 }
 
-export async function commitPosition(
+export async function buyShares(
   wallet: WalletConfig,
   input: {
     marketId: string;
-    commitment: string;
-    proofHex: string;
+    side: "YES" | "NO";
     amountInStroops: bigint;
+    minSharesOut?: bigint;
   },
 ) {
   return submit(
-    "commit",
+    "buy",
     [
       bytes32ScVal(input.marketId),
       scValAddress(publicKeyFromWallet(wallet)),
-      bytes32ScVal(input.commitment),
-      scValBytes(input.proofHex),
+      nativeToScVal(input.side === "YES"),
       nativeToScVal(input.amountInStroops, { type: "i128" }),
+      nativeToScVal(input.minSharesOut ?? BigInt(1), { type: "i128" }),
+    ],
+    wallet,
+  );
+}
+
+export async function sellShares(
+  wallet: WalletConfig,
+  input: {
+    marketId: string;
+    side: "YES" | "NO";
+    shareAmount: bigint;
+    minUsdcOut?: bigint;
+  },
+) {
+  return submit(
+    "sell",
+    [
+      bytes32ScVal(input.marketId),
+      scValAddress(publicKeyFromWallet(wallet)),
+      nativeToScVal(input.side === "YES"),
+      nativeToScVal(input.shareAmount, { type: "i128" }),
+      nativeToScVal(input.minUsdcOut ?? BigInt(1), { type: "i128" }),
     ],
     wallet,
   );
@@ -361,44 +380,10 @@ export async function resolveMarket(wallet: WalletConfig, marketId: string) {
   return submit("resolve", [bytes32ScVal(marketId)], wallet);
 }
 
-export async function registerWin(
-  wallet: WalletConfig,
-  input: {
-    marketId: string;
-    commitment: string;
-    amountInStroops: bigint;
-    nullifier: string;
-    proofHex: string;
-  },
-) {
+export async function collectPositionPayout(wallet: WalletConfig, marketId: string) {
   return submit(
-    "register_win",
-    [
-      bytes32ScVal(input.marketId),
-      scValAddress(publicKeyFromWallet(wallet)),
-      bytes32ScVal(input.commitment),
-      nativeToScVal(input.amountInStroops, { type: "i128" }),
-      bytes32ScVal(input.nullifier),
-      scValBytes(input.proofHex),
-    ],
-    wallet,
-  );
-}
-
-export async function finalizeClaims(wallet: WalletConfig, marketId: string) {
-  return submit("finalize_claims", [bytes32ScVal(marketId)], wallet);
-}
-
-export async function collectPayout(
-  wallet: WalletConfig,
-  input: {
-    marketId: string;
-    nullifier: string;
-  },
-) {
-  return submit(
-    "collect",
-    [bytes32ScVal(input.marketId), scValAddress(publicKeyFromWallet(wallet)), bytes32ScVal(input.nullifier)],
+    "collect_position",
+    [bytes32ScVal(marketId), scValAddress(publicKeyFromWallet(wallet))],
     wallet,
   );
 }

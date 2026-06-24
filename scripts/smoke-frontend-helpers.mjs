@@ -1,13 +1,7 @@
-import fs from "node:fs";
-import path from "node:path";
 import process from "node:process";
-import { randomBytes } from "node:crypto";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { poseidon2Permutation } from "@aztec/foundation/crypto";
-import { Noir } from "@noir-lang/noir_js";
-
-import { createUltraHonkBackend, initBarretenberg } from "./barretenberg.js";
+import { randomBytes } from "node:crypto";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const frontendDir = path.join(rootDir, "frontend");
@@ -24,99 +18,10 @@ stellar.setBrowserConfig(config);
 
 const admin = config.wallets.find((wallet) => wallet.label === "admin");
 const user2 = config.wallets.find((wallet) => wallet.label === "user2");
+const user3 = config.wallets.find((wallet) => wallet.label === "user3");
 
-if (!admin || !user2) {
-  throw new Error("expected admin and user2 wallets in .env");
-}
-
-function toHex(bytes) {
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-function toHex32(value) {
-  return `0x${value.toString(16).padStart(64, "0")}`;
-}
-
-function readCircuitJson(relativePath) {
-  return JSON.parse(fs.readFileSync(path.join(rootDir, relativePath), "utf8"));
-}
-
-async function buildCommitProof({ side, amountUsdc, minBet, maxBet }) {
-  await initBarretenberg();
-
-  const circuit = readCircuitJson("circuits/commit/target/commit.json");
-  const directionField = side === "YES" ? 1n : 0n;
-  const amountInStroops = BigInt(amountUsdc) * 10_000_000n;
-  const salt = `0x${randomBytes(31).toString("hex")}`;
-
-  const commitmentState = await poseidon2Permutation([
-    directionField,
-    amountInStroops,
-    BigInt(salt),
-    0n,
-  ]);
-  const nullifierState = await poseidon2Permutation([BigInt(salt), 12345n, 0n, 0n]);
-
-  const commitment = BigInt(commitmentState[0]);
-  const nullifier = BigInt(nullifierState[0]);
-
-  const noir = new Noir(circuit);
-  const backend = createUltraHonkBackend(circuit.bytecode);
-  const { witness } = await noir.execute({
-    direction: directionField.toString(),
-    amount: amountInStroops.toString(),
-    salt,
-    commitment: toHex32(commitment),
-    min_amount: minBet.toString(),
-    max_amount: maxBet.toString(),
-  });
-  const proof = await backend.generateProof(witness, { keccak: true });
-  await backend.destroy?.();
-
-  return {
-    amountInStroops,
-    salt,
-    commitment: toHex32(commitment),
-    nullifier: toHex32(nullifier),
-    proofHex: `0x${toHex(proof.proof)}`,
-  };
-}
-
-async function buildClaimProof({ side, amountInStroops, salt, outcome }) {
-  await initBarretenberg();
-
-  const circuit = readCircuitJson("circuits/claim/target/claim.json");
-  const directionField = side === "YES" ? 1n : 0n;
-
-  const commitmentState = await poseidon2Permutation([
-    directionField,
-    amountInStroops,
-    BigInt(salt),
-    0n,
-  ]);
-  const nullifierState = await poseidon2Permutation([BigInt(salt), 12345n, 0n, 0n]);
-
-  const commitment = BigInt(commitmentState[0]);
-  const nullifier = BigInt(nullifierState[0]);
-
-  const noir = new Noir(circuit);
-  const backend = createUltraHonkBackend(circuit.bytecode);
-  const { witness } = await noir.execute({
-    direction: directionField.toString(),
-    amount: amountInStroops.toString(),
-    salt,
-    commitment: toHex32(commitment),
-    outcome: outcome ? "1" : "0",
-    nullifier: toHex32(nullifier),
-  });
-  const proof = await backend.generateProof(witness, { keccak: true });
-  await backend.destroy?.();
-
-  return {
-    commitment: toHex32(commitment),
-    nullifier: toHex32(nullifier),
-    proofHex: `0x${toHex(proof.proof)}`,
-  };
+if (!admin || !user2 || !user3) {
+  throw new Error("expected admin, user2, and user3 wallets in .env");
 }
 
 function serialize(value) {
@@ -127,42 +32,71 @@ function serialize(value) {
   );
 }
 
+async function refreshSnapshot(marketId) {
+  const [view, user2Position, user3Position, adminPosition] = await Promise.all([
+    stellar.loadMarketView(marketId, "admin"),
+    stellar.loadPosition(marketId, user2.publicKey, "admin"),
+    stellar.loadPosition(marketId, user3.publicKey, "admin"),
+    stellar.loadPosition(marketId, admin.publicKey, "admin"),
+  ]);
+
+  return {
+    view,
+    positions: {
+      user2: user2Position,
+      user3: user3Position,
+      admin: adminPosition,
+    },
+  };
+}
+
 async function main() {
   const marketId = randomBytes(32).toString("hex");
-  const endTimestamp = BigInt(Math.floor(Date.now() / 1000) + 20);
+  const endTimestamp = BigInt(Math.floor(Date.now() / 1000) + 90);
 
   console.log(`marketId=${marketId}`);
 
   const created = await stellar.createMarket(admin, {
     marketId,
-    question: "Frontend helper smoke test market",
+    question: "Frontend helper trading smoke test market",
     targetPrice: 1n,
     endTimestamp,
-    minBet: 1_000_000n,
-    maxBet: 100_000_000n,
+    minBet: 10_000n,
+    maxBet: 50_000_000n,
     feeBps: 100,
   });
   console.log(`createMarket tx=${created.hash}`);
 
-  const commitProof = await buildCommitProof({
-    side: "YES",
-    amountUsdc: 1,
-    minBet: 1_000_000n,
-    maxBet: 100_000_000n,
-  });
-
-  const committed = await stellar.commitPosition(user2, {
+  const buy1 = await stellar.buyShares(user3, {
     marketId,
-    commitment: commitProof.commitment,
-    proofHex: commitProof.proofHex,
-    amountInStroops: commitProof.amountInStroops,
+    side: "YES",
+    amountInStroops: 1_500_000n,
   });
-  console.log(`commitPosition tx=${committed.hash}`);
+  console.log(`user3 buy YES tx=${buy1.hash}`);
 
-  const stored = await stellar.isCommitmentStored(marketId, commitProof.commitment, "admin");
-  const stateAfterCommit = await stellar.loadMarketState(marketId, "admin");
+  const buy2 = await stellar.buyShares(user3, {
+    marketId,
+    side: "YES",
+    amountInStroops: 1_000_000n,
+  });
+  console.log(`user3 add YES tx=${buy2.hash}`);
 
-  console.log(serialize({ stored, stateAfterCommit }));
+  const buy3 = await stellar.buyShares(user2, {
+    marketId,
+    side: "NO",
+    amountInStroops: 100_000n,
+  });
+  console.log(`user2 buy NO tx=${buy3.hash}`);
+
+  const sell = await stellar.sellShares(user3, {
+    marketId,
+    side: "YES",
+    shareAmount: 500_000n,
+  });
+  console.log(`user3 sell YES tx=${sell.hash}`);
+
+  const stateAfterTrades = await refreshSnapshot(marketId);
+  console.log("afterTrades=", serialize(stateAfterTrades));
 
   const waitMs = Number(endTimestamp * 1000n - BigInt(Date.now()) + 4000n);
   if (waitMs > 0) {
@@ -172,45 +106,18 @@ async function main() {
   const resolved = await stellar.resolveMarket(admin, marketId);
   console.log(`resolveMarket tx=${resolved.hash}`);
 
-  const stateAfterResolve = await stellar.loadMarketState(marketId, "admin");
-  const claimProof = await buildClaimProof({
-    side: "YES",
-    amountInStroops: commitProof.amountInStroops,
-    salt: commitProof.salt,
-    outcome: true,
-  });
+  const afterResolve = await refreshSnapshot(marketId);
+  console.log("afterResolve=", serialize(afterResolve));
 
-  const registered = await stellar.registerWin(user2, {
-    marketId,
-    commitment: claimProof.commitment,
-    amountInStroops: commitProof.amountInStroops,
-    nullifier: claimProof.nullifier,
-    proofHex: claimProof.proofHex,
-  });
-  console.log(`registerWin tx=${registered.hash}`);
+  if (!afterResolve.view.state.outcome) {
+    throw new Error("expected YES outcome for smoke test");
+  }
 
-  const spent = await stellar.isNullifierSpent(marketId, claimProof.nullifier, "admin");
+  const user3Collect = await stellar.collectPositionPayout(user3, marketId);
+  console.log(`user3 collect tx=${user3Collect.hash}`);
 
-  const finalized = await stellar.finalizeClaims(admin, marketId);
-  console.log(`finalizeClaims tx=${finalized.hash}`);
-
-  const collected = await stellar.collectPayout(user2, {
-    marketId,
-    nullifier: claimProof.nullifier,
-  });
-  console.log(`collectPayout tx=${collected.hash}`);
-
-  const finalState = await stellar.loadMarketState(marketId, "admin");
-
-  console.log(
-    serialize({
-      stored,
-      spent,
-      stateAfterCommit,
-      stateAfterResolve,
-      finalState,
-    }),
-  );
+  const finalSnapshot = await refreshSnapshot(marketId);
+  console.log("finalSnapshot=", serialize(finalSnapshot));
 }
 
 main().catch((error) => {
