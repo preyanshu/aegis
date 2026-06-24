@@ -34,6 +34,7 @@ export type OracleCondition = {
 
 export type ResolvedCondition = OracleCondition & {
   observed_price: bigint;
+  observed_timestamp: bigint;
   satisfied: boolean;
 };
 
@@ -294,6 +295,7 @@ function normalizeResolvedCondition(raw: any): ResolvedCondition {
   return {
     ...normalizeOracleCondition(raw),
     observed_price: asBigInt(raw.observed_price),
+    observed_timestamp: asBigInt(raw.observed_timestamp ?? 0),
     satisfied: Boolean(raw.satisfied),
   };
 }

@@ -23,6 +23,7 @@ const LMSR_STEP: i128 = 250;
 const LMSR_LIQUIDITY_PARAM: i128 = 10_000_000;
 const TRADE_SLICE: i128 = 100_000;
 const MAX_ORACLE_CONDITIONS: u32 = 5;
+const ORACLE_LOOKAROUND_WINDOW_SECONDS: u64 = 2_400;
 const LMSR_PRICE_TABLE: [i128; 33] = [
     180, 230, 293, 373, 474, 601, 759, 953, 1192, 1480, 1824, 2227, 2689, 3208, 3775, 4378,
     5000, 5622, 6225, 6792, 7311, 7773, 8176, 8520, 8808, 9047, 9241, 9399, 9526, 9627, 9707,
@@ -56,6 +57,7 @@ pub struct ResolvedCondition {
     pub greater_or_equal: bool,
     pub threshold: i128,
     pub observed_price: i128,
+    pub observed_timestamp: u64,
     pub satisfied: bool,
 }
 
@@ -621,6 +623,7 @@ impl BlindMarket {
             greater_or_equal: true,
             threshold: 0,
             observed_price: 0,
+            observed_timestamp: 0,
             satisfied: false,
         }
     }
@@ -789,36 +792,44 @@ impl BlindMarket {
         let blank = Self::blank_resolved_condition(env);
         (
             if config.condition_count >= 1 {
-                Self::resolve_condition(env, &config.condition_1)
+        Self::resolve_condition(env, &config.condition_1, config.end_timestamp)
             } else {
                 blank.clone()
             },
             if config.condition_count >= 2 {
-                Self::resolve_condition(env, &config.condition_2)
+                Self::resolve_condition(env, &config.condition_2, config.end_timestamp)
             } else {
                 blank.clone()
             },
             if config.condition_count >= 3 {
-                Self::resolve_condition(env, &config.condition_3)
+                Self::resolve_condition(env, &config.condition_3, config.end_timestamp)
             } else {
                 blank.clone()
             },
             if config.condition_count >= 4 {
-                Self::resolve_condition(env, &config.condition_4)
+                Self::resolve_condition(env, &config.condition_4, config.end_timestamp)
             } else {
                 blank.clone()
             },
             if config.condition_count >= 5 {
-                Self::resolve_condition(env, &config.condition_5)
+                Self::resolve_condition(env, &config.condition_5, config.end_timestamp)
             } else {
                 blank
             },
         )
     }
 
-    fn resolve_condition(env: &Env, condition: &OracleCondition) -> ResolvedCondition {
-        let observed_price =
-            Self::get_reflector_price(env, &condition.oracle_contract, &condition.asset_symbol);
+    fn resolve_condition(
+        env: &Env,
+        condition: &OracleCondition,
+        target_timestamp: u64,
+    ) -> ResolvedCondition {
+        let (observed_price, observed_timestamp) = Self::get_reflector_price_at_close(
+            env,
+            &condition.oracle_contract,
+            &condition.asset_symbol,
+            target_timestamp,
+        );
         let satisfied = if condition.greater_or_equal {
             observed_price >= condition.threshold
         } else {
@@ -830,6 +841,7 @@ impl BlindMarket {
             greater_or_equal: condition.greater_or_equal,
             threshold: condition.threshold,
             observed_price,
+            observed_timestamp,
             satisfied,
         }
     }
@@ -876,21 +888,41 @@ impl BlindMarket {
         outcome
     }
 
-    fn get_reflector_price(env: &Env, reflector_addr: &Address, asset_symbol: &Symbol) -> i128 {
+    fn get_reflector_price_at_close(
+        env: &Env,
+        reflector_addr: &Address,
+        asset_symbol: &Symbol,
+        target_timestamp: u64,
+    ) -> (i128, u64) {
         let reflector = ReflectorPulseClient::new(env, reflector_addr);
         let asset = ReflectorAsset::Other(asset_symbol.clone());
-        let recent = reflector
-            .lastprice(&asset)
-            .expect("oracle price unavailable");
-        assert!(
-            recent.timestamp <= env.ledger().timestamp(),
-            "oracle timestamp is in the future",
-        );
-        assert!(
-            env.ledger().timestamp().saturating_sub(recent.timestamp) <= 86_400,
-            "oracle price is stale",
-        );
-        recent.price
+        let resolution = u64::from(reflector.resolution().max(1));
+        let ledger_timestamp = env.ledger().timestamp();
+        let max_steps = ORACLE_LOOKAROUND_WINDOW_SECONDS / resolution;
+
+        for step in 0..=max_steps {
+            let offset = step * resolution;
+            let candidates = [
+                target_timestamp.checked_sub(offset),
+                target_timestamp.checked_add(offset),
+            ];
+
+            for candidate in candidates.into_iter().flatten() {
+                if candidate > ledger_timestamp {
+                    continue;
+                }
+
+                if let Some(price) = reflector.price(&asset, &candidate) {
+                    assert!(
+                        ledger_timestamp.saturating_sub(price.timestamp) <= 86_400,
+                        "oracle price is stale",
+                    );
+                    return (price.price, price.timestamp);
+                }
+            }
+        }
+
+        panic!("oracle price unavailable near market close");
     }
 }
 
@@ -915,6 +947,7 @@ mod test {
             greater_or_equal: true,
             threshold: 1,
             observed_price: 1,
+            observed_timestamp: 1,
             satisfied,
         }
     }

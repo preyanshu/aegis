@@ -5,7 +5,9 @@ use soroban_sdk::{contractclient, contracterror, contracttype, Address, Symbol};
 #[contractclient(name = "ReflectorPulseClient")]
 pub trait Contract {
     fn decimals() -> u32;
+    fn price(asset: Asset, timestamp: u64) -> Option<PriceData>;
     fn lastprice(asset: Asset) -> Option<PriceData>;
+    fn resolution() -> u32;
 }
 
 #[contracttype]
