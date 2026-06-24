@@ -44,8 +44,9 @@ function readMarketState() {
   const raw = JSON.parse(output);
   return {
     total_committed: BigInt(raw.total_committed),
-    total_yes: BigInt(raw.total_yes),
-    total_no: BigInt(raw.total_no),
+    public_yes_quote_bps: BigInt(raw.public_yes_quote_bps),
+    public_no_quote_bps: BigInt(raw.public_no_quote_bps),
+    registered_claim_amount: BigInt(raw.registered_claim_amount),
     resolved: raw.resolved,
     outcome: raw.outcome,
     outcome_price: BigInt(raw.outcome_price),
@@ -98,8 +99,9 @@ async function claimWinnings(betDataFile, userSecretKey) {
     resolved: marketState.resolved,
     outcome: marketState.outcome ? 'YES' : 'NO',
     total_committed: marketState.total_committed.toString(),
-    total_yes: marketState.total_yes.toString(),
-    total_no: marketState.total_no.toString(),
+    public_yes_quote_bps: marketState.public_yes_quote_bps.toString(),
+    public_no_quote_bps: marketState.public_no_quote_bps.toString(),
+    registered_claim_amount: marketState.registered_claim_amount.toString(),
   });
 
   console.log('Generating claim proof...');
@@ -131,12 +133,8 @@ async function claimWinnings(betDataFile, userSecretKey) {
       userKeypair.publicKey(),
       '--commitment',
       betData.commitment.slice(2),
-      '--direction',
-      marketState.outcome ? 'true' : 'false',
       '--amount',
       amountInStroops.toString(),
-      '--_salt',
-      betData.salt.slice(2).padStart(64, '0'),
       '--nullifier',
       nullifierHex.slice(2),
       '--proof-file-path',

@@ -1,7 +1,7 @@
 use dep::std::hash::poseidon2_permutation;
 
 fn main(
-    direction: pub Field,
+    direction: Field,
     amount: pub Field,
     salt: Field,
     commitment: pub Field,

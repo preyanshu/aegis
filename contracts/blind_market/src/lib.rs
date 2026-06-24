@@ -14,6 +14,9 @@ const STATE_KEY: Symbol = symbol_short!("STATE");
 const COMMITMENTS: Symbol = symbol_short!("COMMITS");
 const NULLIFIERS: Symbol = symbol_short!("NULLS");
 const CLAIMS: Symbol = symbol_short!("CLAIMS");
+const QUOTE_FLOOR_BPS: u32 = 2_500;
+const QUOTE_CAP_BPS: u32 = 7_500;
+const VIRTUAL_RESERVE: i128 = 5_000_000;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -34,14 +37,15 @@ pub struct MarketConfig {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MarketState {
     pub total_committed: i128,
-    pub total_yes: i128,
-    pub total_no: i128,
+    pub public_yes_quote_bps: i128,
+    pub public_no_quote_bps: i128,
     pub resolved: bool,
     pub claims_finalized: bool,
     pub outcome: bool,
     pub outcome_price: i128,
     pub distributable_pot: i128,
     pub winning_pool: i128,
+    pub registered_claim_amount: i128,
 }
 
 #[contracttype]
@@ -57,7 +61,6 @@ pub struct CommitmentRecord {
 pub struct ClaimRecord {
     pub claimant: Address,
     pub commitment: BytesN<32>,
-    pub direction: bool,
     pub amount: i128,
 }
 
@@ -107,14 +110,15 @@ impl BlindMarket {
 
         let initial_state = MarketState {
             total_committed: 0,
-            total_yes: 0,
-            total_no: 0,
+            public_yes_quote_bps: 5_000,
+            public_no_quote_bps: 5_000,
             resolved: false,
             claims_finalized: false,
             outcome: false,
             outcome_price: 0,
             distributable_pot: 0,
             winning_pool: 0,
+            registered_claim_amount: 0,
         };
 
         env.storage().instance().set(&ADMIN_KEY, &admin);
@@ -141,7 +145,13 @@ impl BlindMarket {
         env.storage().instance().set(&CONFIG_KEY, &config);
     }
 
-    pub fn commit(env: Env, user: Address, commitment: BytesN<32>, proof: Bytes, amount: i128) {
+    pub fn commit(
+        env: Env,
+        user: Address,
+        commitment: BytesN<32>,
+        proof: Bytes,
+        amount: i128,
+    ) {
         user.require_auth();
 
         let config: MarketConfig = env.storage().instance().get(&CONFIG_KEY).unwrap();
@@ -176,6 +186,9 @@ impl BlindMarket {
         env.storage().instance().set(&COMMITMENTS, &commitments);
 
         state.total_committed += amount;
+        let (yes_quote_bps, no_quote_bps) = Self::public_quote_bps(state.total_committed);
+        state.public_yes_quote_bps = yes_quote_bps as i128;
+        state.public_no_quote_bps = no_quote_bps as i128;
         env.storage().instance().set(&STATE_KEY, &state);
 
         env.events()
@@ -216,9 +229,7 @@ impl BlindMarket {
         env: Env,
         user: Address,
         commitment: BytesN<32>,
-        direction: bool,
         amount: i128,
-        _salt: BytesN<32>,
         nullifier: BytesN<32>,
         proof: Bytes,
     ) {
@@ -243,12 +254,10 @@ impl BlindMarket {
             "already claimed",
         );
 
-        assert_eq!(direction, state.outcome, "losing bets cannot register");
         Self::verify_claim_proof(
             &env,
             &config,
             &commitment,
-            direction,
             amount,
             state.outcome,
             &nullifier,
@@ -265,21 +274,19 @@ impl BlindMarket {
             ClaimRecord {
                 claimant: user.clone(),
                 commitment: commitment.clone(),
-                direction,
                 amount,
             },
         );
         env.storage().instance().set(&CLAIMS, &claims);
 
-        if direction {
-            state.total_yes += amount;
-        } else {
-            state.total_no += amount;
-        }
+        state.registered_claim_amount += amount;
         env.storage().instance().set(&STATE_KEY, &state);
 
         env.events()
-            .publish((symbol_short!("reg_win"),), (user, direction, amount, nullifier));
+            .publish(
+                (symbol_short!("reg_win"),),
+                (user, commitment, amount, nullifier),
+            );
     }
 
     pub fn finalize_claims(env: Env) {
@@ -290,11 +297,7 @@ impl BlindMarket {
         assert!(state.resolved, "market not resolved yet");
         assert!(!state.claims_finalized, "claims already finalized");
 
-        let winning_pool = if state.outcome {
-            state.total_yes
-        } else {
-            state.total_no
-        };
+        let winning_pool = state.registered_claim_amount;
         assert!(winning_pool > 0, "no winners registered");
 
         state.claims_finalized = true;
@@ -317,7 +320,6 @@ impl BlindMarket {
             .get(nullifier.clone())
             .expect("no pending payout");
         assert_eq!(claim.claimant, user, "claimant mismatch");
-        assert_eq!(claim.direction, state.outcome, "you bet on the losing side");
         assert!(state.winning_pool > 0, "winning pool not set");
 
         let payout = (claim.amount * state.distributable_pot) / state.winning_pool;
@@ -369,14 +371,12 @@ impl BlindMarket {
         env: &Env,
         config: &MarketConfig,
         commitment: &BytesN<32>,
-        direction: bool,
         amount: i128,
         outcome: bool,
         nullifier: &BytesN<32>,
         proof: &Bytes,
     ) {
-        let public_inputs =
-            Self::pack_claim_public_inputs(env, direction, amount, commitment, outcome, nullifier);
+        let public_inputs = Self::pack_claim_public_inputs(env, amount, commitment, outcome, nullifier);
         Self::verify_with_contract(env, &config.claim_verifier, public_inputs, proof.clone());
     }
 
@@ -428,14 +428,12 @@ impl BlindMarket {
 
     fn pack_claim_public_inputs(
         env: &Env,
-        direction: bool,
         amount: i128,
         commitment: &BytesN<32>,
         outcome: bool,
         nullifier: &BytesN<32>,
     ) -> Bytes {
         let mut out = Bytes::new(env);
-        out.append(&Self::pack_bool(env, direction));
         out.append(&Self::pack_i128(env, amount));
         out.append(&Bytes::from_slice(env, &commitment.to_array()));
         out.append(&Self::pack_bool(env, outcome));
@@ -453,5 +451,18 @@ impl BlindMarket {
         let mut arr = [0u8; 32];
         arr[16..].copy_from_slice(&value.to_be_bytes());
         Bytes::from_slice(env, &arr)
+    }
+
+    fn public_quote_bps(total_committed: i128) -> (u32, u32) {
+        let total = total_committed.max(0);
+        let depth = total + VIRTUAL_RESERVE;
+        let swing = if depth <= 0 {
+            0
+        } else {
+            ((total * 1_500) / depth).clamp(0, 1_500)
+        };
+        let yes = (5_000i128 + swing).clamp(QUOTE_FLOOR_BPS as i128, QUOTE_CAP_BPS as i128) as u32;
+        let no = (10_000i128 - yes as i128).clamp(QUOTE_FLOOR_BPS as i128, QUOTE_CAP_BPS as i128) as u32;
+        (yes, no)
     }
 }
