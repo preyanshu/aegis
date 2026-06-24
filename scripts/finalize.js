@@ -19,6 +19,8 @@ async function finalizeClaims() {
       process.env.STELLAR_NETWORK,
       '--',
       'finalize_claims',
+      '--market_id',
+      process.env.MARKET_ID,
     ],
     { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
   );

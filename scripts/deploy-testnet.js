@@ -102,18 +102,6 @@ function initializeMarket(contractId, commitVerifierId, claimVerifierId) {
       'initialize',
       '--admin',
       sourcePublicKey,
-      '--question',
-      process.env.MARKET_QUESTION || 'Will BTC be above $50,000 on July 1, 2026?',
-      '--target_price',
-      process.env.TARGET_PRICE || '500000000000',
-      '--end_timestamp',
-      endTimestamp.toString(),
-      '--min_bet',
-      '1000000',
-      '--max_bet',
-      '1000000000',
-      '--fee_bps',
-      '200',
       '--usdc_token',
       process.env.USDC_TOKEN_ID,
       '--reflector_contract',
@@ -145,6 +133,45 @@ function initializeMarket(contractId, commitVerifierId, claimVerifierId) {
     ],
     'set market verifiers',
   );
+
+  const marketId = process.env.MARKET_ID || deriveSaltHex();
+  runCli(
+    [
+      'contract',
+      'invoke',
+      '--id',
+      contractId,
+      '--source-account',
+      sourceAccount,
+      '--rpc-url',
+      rpcUrl,
+      '--network-passphrase',
+      networkPassphrase,
+      '--',
+      'create_market',
+      '--creator',
+      sourcePublicKey,
+      '--market_id',
+      marketId,
+      '--question',
+      process.env.MARKET_QUESTION || 'Will BTC be above $50,000 on July 1, 2026?',
+      '--target_price',
+      process.env.TARGET_PRICE || '500000000000',
+      '--end_timestamp',
+      endTimestamp.toString(),
+      '--min_bet',
+      '1000000',
+      '--max_bet',
+      '1000000000',
+      '--fee_bps',
+      '200',
+    ],
+    'create default market',
+  );
+
+  updateEnv({
+    MARKET_ID: marketId,
+  });
 }
 
 function updateEnv(values) {

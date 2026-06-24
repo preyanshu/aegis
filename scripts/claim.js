@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { loadEnv } from './env.js';
 import { createUltraHonkBackend, initBarretenberg } from './barretenberg.js';
 
-loadEnv({ preserve: ['USER_SECRET_KEY'] });
+loadEnv({ preserve: ['USER_SECRET_KEY', 'MARKET_ID'] });
 
 const claimCircuit = JSON.parse(
   readFileSync('./circuits/claim/target/claim.json', 'utf8'),
@@ -21,7 +21,7 @@ function saltToBigInt(salt) {
   return BigInt(salt);
 }
 
-function readMarketState() {
+function readMarketState(marketId) {
   const output = execFileSync(
     'stellar',
     [
@@ -37,7 +37,9 @@ function readMarketState() {
       process.env.STELLAR_NETWORK,
       '--send=no',
       '--',
-      'get_state',
+      'get_market_state',
+      '--market_id',
+      marketId,
     ],
     { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
   );
@@ -59,6 +61,10 @@ async function claimWinnings(betDataFile, userSecretKey) {
 
   const betData = JSON.parse(readFileSync(betDataFile, 'utf8'));
   const betSide = betData.side || betData.direction;
+  const marketId = betData.marketId || betData.market_id || process.env.MARKET_ID;
+  if (!marketId) {
+    throw new Error('set MARKET_ID or store marketId in the bet file');
+  }
   const userKeypair = Keypair.fromSecret(userSecretKey);
 
   const amountInStroops = BigInt(betData.amountInStroops);
@@ -78,7 +84,7 @@ async function claimWinnings(betDataFile, userSecretKey) {
     throw new Error('saved bet commitment does not match the circuit-derived commitment');
   }
 
-  const marketState = readMarketState();
+  const marketState = readMarketState(marketId);
   if (!marketState.resolved) {
     throw new Error('market has not been resolved yet');
   }
@@ -103,6 +109,7 @@ async function claimWinnings(betDataFile, userSecretKey) {
     yes_share_quote_bps: marketState.public_yes_quote_bps.toString(),
     no_share_quote_bps: marketState.public_no_quote_bps.toString(),
     registered_claim_amount: marketState.registered_claim_amount.toString(),
+    marketId,
   });
 
   console.log('Generating claim proof...');
@@ -130,6 +137,8 @@ async function claimWinnings(betDataFile, userSecretKey) {
       process.env.STELLAR_NETWORK,
       '--',
       'register_win',
+      '--market_id',
+      marketId,
       '--user',
       userKeypair.publicKey(),
       '--commitment',

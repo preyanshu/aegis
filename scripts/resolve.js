@@ -19,6 +19,8 @@ async function resolveMarket() {
       process.env.STELLAR_NETWORK,
       '--',
       'resolve',
+      '--market_id',
+      process.env.MARKET_ID,
     ],
     { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
   );

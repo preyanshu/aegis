@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { loadEnv } from './env.js';
 import { createUltraHonkBackend, initBarretenberg } from './barretenberg.js';
 
-loadEnv({ preserve: ['USER_SECRET_KEY'] });
+loadEnv({ preserve: ['USER_SECRET_KEY', 'MARKET_ID'] });
 
 const commitCircuit = JSON.parse(
   readFileSync('./circuits/commit/target/commit.json', 'utf8'),
@@ -26,6 +26,10 @@ async function placeBet(userSecretKey, side, amountUsdc) {
   await initBarretenberg();
 
   const userKeypair = Keypair.fromSecret(userSecretKey);
+  const marketId = process.env.MARKET_ID;
+  if (!marketId) {
+    throw new Error('set MARKET_ID to the market you want to trade');
+  }
 
   const salt = randomFieldSalt();
   const directionField = side ? '1' : '0';
@@ -86,6 +90,8 @@ async function placeBet(userSecretKey, side, amountUsdc) {
       process.env.STELLAR_NETWORK,
       '--',
       'commit',
+      '--market_id',
+      marketId,
       '--user',
       userKeypair.publicKey(),
       '--commitment',
@@ -108,6 +114,7 @@ async function placeBet(userSecretKey, side, amountUsdc) {
       {
         commitment: commitmentHex,
         nullifier: nullifierHex,
+        marketId,
         side: side ? 'YES' : 'NO',
         amount: amountUsdc,
         amountInStroops: amountInStroops.toString(),
