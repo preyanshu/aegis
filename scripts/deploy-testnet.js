@@ -1,24 +1,14 @@
-import {
-  Address,
-  BASE_FEE,
-  Contract,
-  hash,
-  Keypair,
-  nativeToScVal,
-  Operation,
-  rpc as StellarRpc,
-  StrKey,
-  TransactionBuilder,
-  xdr,
-} from '@stellar/stellar-sdk';
+import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
-import dotenv from 'dotenv';
+import { Keypair } from '@stellar/stellar-sdk';
+import { loadEnv } from './env.js';
 
-dotenv.config();
+loadEnv();
 
-const rpc = new StellarRpc.Server(process.env.STELLAR_RPC);
-const deployer = Keypair.fromSecret(process.env.ADMIN_SECRET_KEY);
+const sourceAccount = process.env.ADMIN_SECRET_KEY;
+const sourcePublicKey = Keypair.fromSecret(sourceAccount).publicKey();
+const rpcUrl = process.env.STELLAR_RPC;
 const networkPassphrase = process.env.STELLAR_NETWORK;
 
 const verifierWasmPath =
@@ -26,117 +16,133 @@ const verifierWasmPath =
 const marketWasmPath =
   './contracts/blind_market/target/wasm32v1-none/release/blind_market.wasm';
 
-function scBytes(bytes) {
-  return xdr.ScVal.scvBytes(Buffer.from(bytes));
+function deriveSaltHex() {
+  return randomBytes(32).toString('hex');
 }
 
-function deriveContractId(address, salt) {
-  const networkId = hash(Buffer.from(networkPassphrase));
-  const preimage = xdr.ContractIdPreimage.contractIdPreimageFromAddress(
-    new xdr.ContractIdPreimageFromAddress({
-      address: Address.fromString(address).toScAddress(),
-      salt,
-    }),
-  );
-  const contractIdPreimage = xdr.HashIdPreimage.envelopeTypeContractId(
-    new xdr.HashIdPreimageContractId({
-      networkId,
-      contractIdPreimage: preimage,
-    }),
-  );
-  return StrKey.encodeContract(hash(contractIdPreimage.toXDR()));
-}
-
-async function submit(operation, label) {
-  const account = await rpc.getAccount(deployer.publicKey());
-  const tx = new TransactionBuilder(account, {
-    fee: BASE_FEE,
-    networkPassphrase,
-  })
-    .addOperation(operation)
-    .setTimeout(120)
-    .build();
-
-  const prepared = await rpc.prepareTransaction(tx);
-  prepared.sign(deployer);
-
-  const sent = await rpc.sendTransaction(prepared);
-  if (sent.status === 'ERROR') {
-    throw new Error(`${label} failed to submit: ${JSON.stringify(sent)}`);
+function runCli(args, label) {
+  const output = execFileSync('stellar', args, {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const printable = output.trim();
+  if (printable) {
+    console.log(`${label}: ${printable}`);
+  } else {
+    console.log(`${label}: ok`);
   }
-
-  for (;;) {
-    const result = await rpc.getTransaction(sent.hash);
-    if (result.status === 'SUCCESS') {
-      console.log(`${label}: ${sent.hash}`);
-      return result;
-    }
-    if (result.status === 'FAILED') {
-      throw new Error(`${label} failed on-chain: ${JSON.stringify(result)}`);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-  }
+  return output;
 }
 
-async function uploadWasm(path, label) {
-  const wasm = readFileSync(path);
-  const result = await submit(
-    Operation.uploadContractWasm({ wasm, source: deployer.publicKey() }),
+function uploadWasm(path, label) {
+  const output = runCli(
+    [
+      'contract',
+      'upload',
+      '--wasm',
+      path,
+      '--source-account',
+      sourceAccount,
+      '--rpc-url',
+      rpcUrl,
+      '--network-passphrase',
+      networkPassphrase,
+    ],
     `upload ${label}`,
   );
-  const wasmHash = result.returnValue.bytes();
-  console.log(`${label} wasm hash: ${wasmHash.toString('hex')}`);
+  const wasmHash = output.match(/[a-f0-9]{64}/i)?.[0];
+  if (!wasmHash) {
+    throw new Error(`could not parse wasm hash from ${label} upload`);
+  }
   return wasmHash;
 }
 
-async function deployContract(wasmHash, label, constructorArgs = []) {
-  const salt = randomBytes(32);
-  const contractId = deriveContractId(deployer.publicKey(), salt);
-  await submit(
-    Operation.createCustomContract({
-      address: Address.fromString(deployer.publicKey()),
-      wasmHash,
-      salt,
-      constructorArgs,
-      source: deployer.publicKey(),
-    }),
-    `deploy ${label}`,
-  );
-  console.log(`${label} contract: ${contractId}`);
+function deployContract(wasmHash, label, constructorArgs = []) {
+  const args = [
+    'contract',
+    'deploy',
+    '--wasm-hash',
+    wasmHash,
+    '--source-account',
+    sourceAccount,
+    '--rpc-url',
+    rpcUrl,
+    '--network-passphrase',
+    networkPassphrase,
+  ];
+  if (constructorArgs.length > 0) {
+    args.push('--', ...constructorArgs);
+  }
+  const output = runCli(args, `deploy ${label}`);
+  const contractId = output.match(/C[A-Z0-9]{55}/i)?.[0];
+  if (!contractId) {
+    throw new Error(`could not parse contract id from ${label} deployment`);
+  }
   return contractId;
 }
 
-async function initializeMarket(contractId, commitVerifierId, claimVerifierId) {
-  const contract = new Contract(contractId);
-  await submit(
-    contract.call(
+function initializeMarket(contractId, commitVerifierId, claimVerifierId) {
+  const endTimestamp = BigInt(
+    process.env.END_TIMESTAMP ||
+      Math.floor(new Date('2026-07-01T00:00:00Z').getTime() / 1000),
+  );
+  runCli(
+    [
+      'contract',
+      'invoke',
+      '--id',
+      contractId,
+      '--source-account',
+      sourceAccount,
+      '--rpc-url',
+      rpcUrl,
+      '--network-passphrase',
+      networkPassphrase,
+      '--',
       'initialize',
-      nativeToScVal(deployer.publicKey(), { type: 'address' }),
-      nativeToScVal(process.env.MARKET_QUESTION || 'Will BTC be above $50,000 on July 1, 2026?', { type: 'string' }),
-      nativeToScVal(BigInt(process.env.TARGET_PRICE || '500000000000'), { type: 'i128' }),
-      nativeToScVal(
-        BigInt(
-          process.env.END_TIMESTAMP ||
-            Math.floor(new Date('2026-07-01T00:00:00Z').getTime() / 1000),
-        ),
-        { type: 'u64' },
-      ),
-      nativeToScVal(1_000_000n, { type: 'i128' }),
-      nativeToScVal(1_000_000_000n, { type: 'i128' }),
-      nativeToScVal(200, { type: 'u32' }),
-      nativeToScVal(Address.fromString(process.env.USDC_TOKEN_ID), { type: 'address' }),
-      nativeToScVal(Address.fromString(process.env.REFLECTOR_ID), { type: 'address' }),
-    ),
+      '--admin',
+      sourcePublicKey,
+      '--question',
+      process.env.MARKET_QUESTION || 'Will BTC be above $50,000 on July 1, 2026?',
+      '--target_price',
+      process.env.TARGET_PRICE || '500000000000',
+      '--end_timestamp',
+      endTimestamp.toString(),
+      '--min_bet',
+      '1000000',
+      '--max_bet',
+      '1000000000',
+      '--fee_bps',
+      '200',
+      '--usdc_token',
+      process.env.USDC_TOKEN_ID,
+      '--reflector_contract',
+      process.env.REFLECTOR_ID,
+    ],
     'initialize market',
   );
 
-  await submit(
-    contract.call(
+  runCli(
+    [
+      'contract',
+      'invoke',
+      '--id',
+      contractId,
+      '--source-account',
+      sourceAccount,
+      '--rpc-url',
+      rpcUrl,
+      '--network-passphrase',
+      networkPassphrase,
+      '--',
       'set_verifiers',
-      nativeToScVal(deployer.publicKey(), { type: 'address' }),
-      nativeToScVal(Address.fromString(commitVerifierId), { type: 'address' }),
-      nativeToScVal(Address.fromString(claimVerifierId), { type: 'address' }),
-    ),
+      '--admin',
+      sourcePublicKey,
+      '--commit_verifier',
+      commitVerifierId,
+      '--claim_verifier',
+      claimVerifierId,
+    ],
     'set market verifiers',
   );
 }
@@ -157,25 +163,22 @@ function updateEnv(values) {
 }
 
 async function main() {
-  console.log(`Deploying from ${deployer.publicKey()}`);
+  console.log(`Deploying from ${sourceAccount}`);
 
-  const verifierHash = await uploadWasm(verifierWasmPath, 'ultrahonk verifier');
-  const marketHash = await uploadWasm(marketWasmPath, 'blind market');
+  const verifierHash = uploadWasm(verifierWasmPath, 'ultrahonk verifier');
+  const marketHash = uploadWasm(marketWasmPath, 'blind market');
 
-  const commitVerifierId = await deployContract(
-    verifierHash,
-    'commit verifier',
-    [scBytes(readFileSync('./verifier/commit_vk.bin'))],
-  );
+  const commitVerifierId = deployContract(verifierHash, 'commit verifier', [
+    '--vk_bytes-file-path',
+    './verifier/commit_vk.bin',
+  ]);
+  const claimVerifierId = deployContract(verifierHash, 'claim verifier', [
+    '--vk_bytes-file-path',
+    './verifier/claim_vk.bin',
+  ]);
+  const marketContractId = deployContract(marketHash, 'blind market');
 
-  const claimVerifierId = await deployContract(
-    verifierHash,
-    'claim verifier',
-    [scBytes(readFileSync('./verifier/claim_vk.bin'))],
-  );
-
-  const marketContractId = await deployContract(marketHash, 'blind market');
-  await initializeMarket(marketContractId, commitVerifierId, claimVerifierId);
+  initializeMarket(marketContractId, commitVerifierId, claimVerifierId);
 
   updateEnv({
     COMMIT_VERIFIER_ID: commitVerifierId,
