@@ -59,7 +59,21 @@ async function main() {
   const created = await stellar.createMarket(admin, {
     marketId,
     question: "Frontend helper trading smoke test market",
-    targetPrice: 1n,
+    oracleConditions: [
+      {
+        oracle_contract: "CCYOZJCOPG34LLQQ7N24YXBM7LL62R7ONMZ3G6WZAAYPB5OYKOMJRN63",
+        asset_symbol: "BTC",
+        greater_or_equal: true,
+        threshold: 1n,
+      },
+      {
+        oracle_contract: "CCYOZJCOPG34LLQQ7N24YXBM7LL62R7ONMZ3G6WZAAYPB5OYKOMJRN63",
+        asset_symbol: "ETH",
+        greater_or_equal: true,
+        threshold: 1n,
+      },
+    ],
+    conditionOperators: [true],
     endTimestamp,
     minBet: 10_000n,
     maxBet: 50_000_000n,
@@ -84,7 +98,7 @@ async function main() {
   const buy3 = await stellar.buyShares(user2, {
     marketId,
     side: "NO",
-    amountInStroops: 100_000n,
+    amountInStroops: 25_000n,
   });
   console.log(`user2 buy NO tx=${buy3.hash}`);
 

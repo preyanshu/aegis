@@ -82,10 +82,6 @@ function deployContract(wasmHash, label, constructorArgs = []) {
 }
 
 function initializeMarket(contractId, commitVerifierId, claimVerifierId) {
-  const endTimestamp = BigInt(
-    process.env.END_TIMESTAMP ||
-      Math.floor(new Date('2026-07-01T00:00:00Z').getTime() / 1000),
-  );
   runCli(
     [
       'contract',
@@ -135,42 +131,18 @@ function initializeMarket(contractId, commitVerifierId, claimVerifierId) {
   );
 
   const marketId = process.env.MARKET_ID || deriveSaltHex();
-  runCli(
-    [
-      'contract',
-      'invoke',
-      '--id',
-      contractId,
-      '--source-account',
-      sourceAccount,
-      '--rpc-url',
-      rpcUrl,
-      '--network-passphrase',
-      networkPassphrase,
-      '--',
-      'create_market',
-      '--creator',
-      sourcePublicKey,
-      '--market_id',
-      marketId,
-      '--question',
-      process.env.MARKET_QUESTION || 'Will BTC be above $50,000 on July 1, 2026?',
-      '--target_price',
-      process.env.TARGET_PRICE || '500000000000',
-      '--end_timestamp',
-      endTimestamp.toString(),
-      '--min_bet',
-      '1000000',
-      '--max_bet',
-      '1000000000',
-      '--fee_bps',
-      '200',
-    ],
-    'create default market',
-  );
 
   updateEnv({
     MARKET_ID: marketId,
+  });
+
+  execFileSync('node', ['./scripts/create-market.js', marketId], {
+    encoding: 'utf8',
+    stdio: 'inherit',
+    env: {
+      ...process.env,
+      MARKET_CONTRACT_ID: contractId,
+    },
   });
 }
 

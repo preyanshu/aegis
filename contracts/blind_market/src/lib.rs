@@ -22,6 +22,7 @@ const LMSR_X_MAX: i128 = 4_000;
 const LMSR_STEP: i128 = 250;
 const LMSR_LIQUIDITY_PARAM: i128 = 10_000_000;
 const TRADE_SLICE: i128 = 100_000;
+const MAX_ORACLE_CONDITIONS: u32 = 5;
 const LMSR_PRICE_TABLE: [i128; 33] = [
     180, 230, 293, 373, 474, 601, 759, 953, 1192, 1480, 1824, 2227, 2689, 3208, 3775, 4378,
     5000, 5622, 6225, 6792, 7311, 7773, 8176, 8520, 8808, 9047, 9241, 9399, 9526, 9627, 9707,
@@ -40,14 +41,58 @@ pub struct SystemConfig {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OracleCondition {
+    pub oracle_contract: Address,
+    pub asset_symbol: Symbol,
+    pub greater_or_equal: bool,
+    pub threshold: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedCondition {
+    pub oracle_contract: Address,
+    pub asset_symbol: Symbol,
+    pub greater_or_equal: bool,
+    pub threshold: i128,
+    pub observed_price: i128,
+    pub satisfied: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MarketConfig {
     pub creator: Address,
     pub question: String,
-    pub target_price: i128,
+    pub condition_count: u32,
+    pub condition_1: OracleCondition,
+    pub condition_2: OracleCondition,
+    pub condition_3: OracleCondition,
+    pub condition_4: OracleCondition,
+    pub condition_5: OracleCondition,
+    pub operator_1_is_and: bool,
+    pub operator_2_is_and: bool,
+    pub operator_3_is_and: bool,
+    pub operator_4_is_and: bool,
     pub end_timestamp: u64,
     pub min_bet: i128,
     pub max_bet: i128,
     pub fee_bps: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OracleConditionsInput {
+    pub condition_count: u32,
+    pub condition_1: OracleCondition,
+    pub condition_2: OracleCondition,
+    pub condition_3: OracleCondition,
+    pub condition_4: OracleCondition,
+    pub condition_5: OracleCondition,
+    pub operator_1_is_and: bool,
+    pub operator_2_is_and: bool,
+    pub operator_3_is_and: bool,
+    pub operator_4_is_and: bool,
 }
 
 #[contracttype]
@@ -62,6 +107,12 @@ pub struct MarketState {
     pub claims_finalized: bool,
     pub outcome: bool,
     pub outcome_price: i128,
+    pub resolved_condition_count: u32,
+    pub resolved_condition_1: ResolvedCondition,
+    pub resolved_condition_2: ResolvedCondition,
+    pub resolved_condition_3: ResolvedCondition,
+    pub resolved_condition_4: ResolvedCondition,
+    pub resolved_condition_5: ResolvedCondition,
     pub distributable_pot: i128,
     pub winning_pool: i128,
     pub registered_claim_amount: i128,
@@ -146,12 +197,13 @@ impl BlindMarket {
         env.storage().instance().set(&SYSTEM_KEY, &system);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn create_market(
         env: Env,
         creator: Address,
         market_id: BytesN<32>,
         question: String,
-        target_price: i128,
+        conditions: OracleConditionsInput,
         end_timestamp: u64,
         min_bet: i128,
         max_bet: i128,
@@ -163,7 +215,8 @@ impl BlindMarket {
             env.storage().instance().get(&MARKET_CONFIGS_KEY).unwrap();
         let mut states: Map<BytesN<32>, MarketState> =
             env.storage().instance().get(&MARKET_STATES_KEY).unwrap();
-        let mut ids: SorobanVec<BytesN<32>> = env.storage().instance().get(&MARKET_IDS_KEY).unwrap();
+        let mut ids: SorobanVec<BytesN<32>> =
+            env.storage().instance().get(&MARKET_IDS_KEY).unwrap();
 
         assert!(!configs.contains_key(market_id.clone()), "market already exists");
         assert!(
@@ -173,17 +226,34 @@ impl BlindMarket {
         assert!(fee_bps <= 1_000, "fee too high");
         assert!(min_bet > 0, "min_bet must be positive");
         assert!(max_bet >= min_bet, "max_bet below min_bet");
+        Self::validate_market_conditions(
+            conditions.condition_count,
+            &conditions.condition_1,
+            &conditions.condition_2,
+            &conditions.condition_3,
+            &conditions.condition_4,
+            &conditions.condition_5,
+        );
 
         let config = MarketConfig {
             creator,
             question,
-            target_price,
+            condition_count: conditions.condition_count,
+            condition_1: conditions.condition_1,
+            condition_2: conditions.condition_2,
+            condition_3: conditions.condition_3,
+            condition_4: conditions.condition_4,
+            condition_5: conditions.condition_5,
+            operator_1_is_and: conditions.operator_1_is_and,
+            operator_2_is_and: conditions.operator_2_is_and,
+            operator_3_is_and: conditions.operator_3_is_and,
+            operator_4_is_and: conditions.operator_4_is_and,
             end_timestamp,
             min_bet,
             max_bet,
             fee_bps,
         };
-        let state = Self::empty_state();
+        let state = Self::empty_state(&env);
 
         configs.set(market_id.clone(), config);
         states.set(market_id.clone(), state);
@@ -194,7 +264,7 @@ impl BlindMarket {
         env.storage().instance().set(&MARKET_IDS_KEY, &ids);
 
         env.events()
-            .publish((symbol_short!("mk_create"),), (market_id, target_price, end_timestamp));
+            .publish((symbol_short!("mk_create"),), (market_id, end_timestamp));
     }
 
     pub fn buy(
@@ -274,9 +344,15 @@ impl BlindMarket {
         assert!(share_amount > 0, "share_amount must be positive");
 
         if side_yes {
-            assert!(position.yes_shares >= share_amount, "insufficient YES shares");
+            assert!(
+                position.yes_shares >= share_amount,
+                "insufficient YES shares"
+            );
         } else {
-            assert!(position.no_shares >= share_amount, "insufficient NO shares");
+            assert!(
+                position.no_shares >= share_amount,
+                "insufficient NO shares"
+            );
         }
 
         let usdc_out = Self::quote_sell_value(&state, side_yes, share_amount);
@@ -319,14 +395,21 @@ impl BlindMarket {
         );
         assert!(!state.resolved, "already resolved");
 
-        let oracle_price = Self::get_reflector_price(&env, &system.reflector_contract);
-        let outcome = oracle_price >= config.target_price;
+        let resolved_conditions = Self::resolve_market_conditions(&env, &config);
+        let outcome = Self::combine_condition_results(&config, &resolved_conditions);
+        let oracle_price = resolved_conditions.0.observed_price;
         let fee_amount = (state.total_committed * config.fee_bps as i128) / QUOTE_SCALE_BPS;
 
         state.resolved = true;
         state.claims_finalized = true;
         state.outcome = outcome;
         state.outcome_price = oracle_price;
+        state.resolved_condition_count = config.condition_count;
+        state.resolved_condition_1 = resolved_conditions.0;
+        state.resolved_condition_2 = resolved_conditions.1;
+        state.resolved_condition_3 = resolved_conditions.2;
+        state.resolved_condition_4 = resolved_conditions.3;
+        state.resolved_condition_5 = resolved_conditions.4;
         state.distributable_pot = state.total_committed - fee_amount;
         state.winning_pool = if outcome {
             state.yes_shares_outstanding
@@ -343,7 +426,7 @@ impl BlindMarket {
 
         env.events().publish(
             (symbol_short!("resolved"),),
-            (market_id, outcome, oracle_price, config.target_price, state.winning_pool),
+            (market_id, outcome, oracle_price, state.winning_pool),
         );
     }
 
@@ -419,6 +502,33 @@ impl BlindMarket {
         Self::get_position_internal(&env, &market_id, &user)
     }
 
+    fn validate_market_conditions(
+        condition_count: u32,
+        condition_1: &OracleCondition,
+        condition_2: &OracleCondition,
+        condition_3: &OracleCondition,
+        condition_4: &OracleCondition,
+        condition_5: &OracleCondition,
+    ) {
+        assert!(condition_count > 0, "at least one condition is required");
+        assert!(condition_count <= MAX_ORACLE_CONDITIONS, "too many conditions");
+        if condition_count >= 1 {
+            assert!(condition_1.threshold > 0, "condition 1 threshold must be positive");
+        }
+        if condition_count >= 2 {
+            assert!(condition_2.threshold > 0, "condition 2 threshold must be positive");
+        }
+        if condition_count >= 3 {
+            assert!(condition_3.threshold > 0, "condition 3 threshold must be positive");
+        }
+        if condition_count >= 4 {
+            assert!(condition_4.threshold > 0, "condition 4 threshold must be positive");
+        }
+        if condition_count >= 5 {
+            assert!(condition_5.threshold > 0, "condition 5 threshold must be positive");
+        }
+    }
+
     fn get_market_config_internal(env: &Env, market_id: &BytesN<32>) -> MarketConfig {
         let configs: Map<BytesN<32>, MarketConfig> =
             env.storage().instance().get(&MARKET_CONFIGS_KEY).unwrap();
@@ -466,7 +576,7 @@ impl BlindMarket {
         env.storage().instance().set(&POSITIONS_KEY, &positions);
     }
 
-    fn empty_state() -> MarketState {
+    fn empty_state(env: &Env) -> MarketState {
         MarketState {
             total_committed: 0,
             public_yes_quote_bps: QUOTE_SCALE_BPS / 2,
@@ -477,9 +587,41 @@ impl BlindMarket {
             claims_finalized: false,
             outcome: false,
             outcome_price: 0,
+            resolved_condition_count: 0,
+            resolved_condition_1: Self::blank_resolved_condition(env),
+            resolved_condition_2: Self::blank_resolved_condition(env),
+            resolved_condition_3: Self::blank_resolved_condition(env),
+            resolved_condition_4: Self::blank_resolved_condition(env),
+            resolved_condition_5: Self::blank_resolved_condition(env),
             distributable_pot: 0,
             winning_pool: 0,
             registered_claim_amount: 0,
+        }
+    }
+
+    fn blank_oracle_condition(env: &Env) -> OracleCondition {
+        OracleCondition {
+            oracle_contract: Address::from_string(&String::from_str(
+                env,
+                "CCYOZJCOPG34LLQQ7N24YXBM7LL62R7ONMZ3G6WZAAYPB5OYKOMJRN63",
+            )),
+            asset_symbol: Symbol::new(env, "NA"),
+            greater_or_equal: true,
+            threshold: 0,
+        }
+    }
+
+    fn blank_resolved_condition(env: &Env) -> ResolvedCondition {
+        ResolvedCondition {
+            oracle_contract: Address::from_string(&String::from_str(
+                env,
+                "CCYOZJCOPG34LLQQ7N24YXBM7LL62R7ONMZ3G6WZAAYPB5OYKOMJRN63",
+            )),
+            asset_symbol: Symbol::new(env, "NA"),
+            greater_or_equal: true,
+            threshold: 0,
+            observed_price: 0,
+            satisfied: false,
         }
     }
 
@@ -634,9 +776,109 @@ impl BlindMarket {
         }
     }
 
-    fn get_reflector_price(env: &Env, reflector_addr: &Address) -> i128 {
+    fn resolve_market_conditions(
+        env: &Env,
+        config: &MarketConfig,
+    ) -> (
+        ResolvedCondition,
+        ResolvedCondition,
+        ResolvedCondition,
+        ResolvedCondition,
+        ResolvedCondition,
+    ) {
+        let blank = Self::blank_resolved_condition(env);
+        (
+            if config.condition_count >= 1 {
+                Self::resolve_condition(env, &config.condition_1)
+            } else {
+                blank.clone()
+            },
+            if config.condition_count >= 2 {
+                Self::resolve_condition(env, &config.condition_2)
+            } else {
+                blank.clone()
+            },
+            if config.condition_count >= 3 {
+                Self::resolve_condition(env, &config.condition_3)
+            } else {
+                blank.clone()
+            },
+            if config.condition_count >= 4 {
+                Self::resolve_condition(env, &config.condition_4)
+            } else {
+                blank.clone()
+            },
+            if config.condition_count >= 5 {
+                Self::resolve_condition(env, &config.condition_5)
+            } else {
+                blank
+            },
+        )
+    }
+
+    fn resolve_condition(env: &Env, condition: &OracleCondition) -> ResolvedCondition {
+        let observed_price =
+            Self::get_reflector_price(env, &condition.oracle_contract, &condition.asset_symbol);
+        let satisfied = if condition.greater_or_equal {
+            observed_price >= condition.threshold
+        } else {
+            observed_price <= condition.threshold
+        };
+        ResolvedCondition {
+            oracle_contract: condition.oracle_contract.clone(),
+            asset_symbol: condition.asset_symbol.clone(),
+            greater_or_equal: condition.greater_or_equal,
+            threshold: condition.threshold,
+            observed_price,
+            satisfied,
+        }
+    }
+
+    fn combine_condition_results(
+        config: &MarketConfig,
+        resolved_conditions: &(
+            ResolvedCondition,
+            ResolvedCondition,
+            ResolvedCondition,
+            ResolvedCondition,
+            ResolvedCondition,
+        ),
+    ) -> bool {
+        let mut outcome = resolved_conditions.0.satisfied;
+        if config.condition_count >= 2 {
+            outcome = if config.operator_1_is_and {
+                outcome && resolved_conditions.1.satisfied
+            } else {
+                outcome || resolved_conditions.1.satisfied
+            };
+        }
+        if config.condition_count >= 3 {
+            outcome = if config.operator_2_is_and {
+                outcome && resolved_conditions.2.satisfied
+            } else {
+                outcome || resolved_conditions.2.satisfied
+            };
+        }
+        if config.condition_count >= 4 {
+            outcome = if config.operator_3_is_and {
+                outcome && resolved_conditions.3.satisfied
+            } else {
+                outcome || resolved_conditions.3.satisfied
+            };
+        }
+        if config.condition_count >= 5 {
+            outcome = if config.operator_4_is_and {
+                outcome && resolved_conditions.4.satisfied
+            } else {
+                outcome || resolved_conditions.4.satisfied
+            };
+        }
+        outcome
+    }
+
+    fn get_reflector_price(env: &Env, reflector_addr: &Address, asset_symbol: &Symbol) -> i128 {
         let reflector = ReflectorPulseClient::new(env, reflector_addr);
-        let asset = ReflectorAsset::Other(Symbol::new(env, "BTC"));
+        let asset = ReflectorAsset::Other(asset_symbol.clone());
         let recent = reflector
             .lastprice(&asset)
             .expect("oracle price unavailable");
@@ -650,5 +892,79 @@ impl BlindMarket {
         );
         recent.price
     }
+}
 
+#[cfg(test)]
+mod test {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+
+    fn condition(env: &Env, symbol: &str) -> OracleCondition {
+        OracleCondition {
+            oracle_contract: Address::generate(env),
+            asset_symbol: Symbol::new(env, symbol),
+            greater_or_equal: true,
+            threshold: 1,
+        }
+    }
+
+    fn resolved(env: &Env, symbol: &str, satisfied: bool) -> ResolvedCondition {
+        ResolvedCondition {
+            oracle_contract: Address::generate(env),
+            asset_symbol: Symbol::new(env, symbol),
+            greater_or_equal: true,
+            threshold: 1,
+            observed_price: 1,
+            satisfied,
+        }
+    }
+
+    #[test]
+    fn combines_conditions_left_to_right() {
+        let env = Env::default();
+        let config = MarketConfig {
+            creator: Address::generate(&env),
+            question: String::from_str(&env, "combo"),
+            condition_count: 3,
+            condition_1: condition(&env, "BTC"),
+            condition_2: condition(&env, "ETH"),
+            condition_3: condition(&env, "XLM"),
+            condition_4: BlindMarket::blank_oracle_condition(&env),
+            condition_5: BlindMarket::blank_oracle_condition(&env),
+            operator_1_is_and: false,
+            operator_2_is_and: true,
+            operator_3_is_and: true,
+            operator_4_is_and: true,
+            end_timestamp: 1,
+            min_bet: 1,
+            max_bet: 10,
+            fee_bps: 100,
+        };
+
+        let outcome = BlindMarket::combine_condition_results(
+            &config,
+            &(
+                resolved(&env, "BTC", false),
+                resolved(&env, "ETH", true),
+                resolved(&env, "XLM", true),
+                BlindMarket::blank_resolved_condition(&env),
+                BlindMarket::blank_resolved_condition(&env),
+            ),
+        );
+        assert!(outcome);
+    }
+
+    #[test]
+    #[should_panic(expected = "too many conditions")]
+    fn rejects_more_than_five_conditions() {
+        let env = Env::default();
+        BlindMarket::validate_market_conditions(
+            6,
+            &condition(&env, "BTC"),
+            &condition(&env, "ETH"),
+            &condition(&env, "XLM"),
+            &condition(&env, "SOL"),
+            &condition(&env, "ADA"),
+        );
+    }
 }

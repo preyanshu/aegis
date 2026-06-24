@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import {
   Address,
   BASE_FEE,
@@ -95,24 +96,10 @@ async function deployContract(wasmHash) {
 
 async function initializeMarket(contractId) {
   const contract = new Contract(contractId);
-  const endTimestamp = BigInt(
-    process.env.END_TIMESTAMP ||
-      Math.floor(Date.now() / 1000) + Number(process.env.MARKET_DURATION_SECONDS || 180),
-  );
-
   await submit(
     contract.call(
       'initialize',
       nativeToScVal(deployer.publicKey(), { type: 'address' }),
-      nativeToScVal(
-        process.env.MARKET_QUESTION || 'Will BTC be above $50,000 on July 1, 2026?',
-        { type: 'string' },
-      ),
-      nativeToScVal(BigInt(process.env.TARGET_PRICE || '500000000000'), { type: 'i128' }),
-      nativeToScVal(endTimestamp, { type: 'u64' }),
-      nativeToScVal(1_000_000n, { type: 'i128' }),
-      nativeToScVal(1_000_000_000n, { type: 'i128' }),
-      nativeToScVal(200, { type: 'u32' }),
       nativeToScVal(Address.fromString(process.env.USDC_TOKEN_ID), { type: 'address' }),
       nativeToScVal(Address.fromString(process.env.REFLECTOR_ID), { type: 'address' }),
     ),
@@ -128,6 +115,19 @@ async function initializeMarket(contractId) {
     ),
     'set market verifiers',
   );
+
+  execFileSync('node', ['./scripts/create-market.js', '--new'], {
+    encoding: 'utf8',
+    stdio: 'inherit',
+    env: {
+      ...process.env,
+      MARKET_CONTRACT_ID: contractId,
+      END_TIMESTAMP: (
+        process.env.END_TIMESTAMP ||
+        Math.floor(Date.now() / 1000) + Number(process.env.MARKET_DURATION_SECONDS || 180)
+      ).toString(),
+    },
+  });
 }
 
 async function main() {
