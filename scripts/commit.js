@@ -22,13 +22,13 @@ function randomFieldSalt() {
   return `0x${randomBytes(31).toString('hex')}`;
 }
 
-async function placeBet(userSecretKey, direction, amountUsdc) {
+async function placeBet(userSecretKey, side, amountUsdc) {
   await initBarretenberg();
 
   const userKeypair = Keypair.fromSecret(userSecretKey);
 
   const salt = randomFieldSalt();
-  const directionField = direction ? '1' : '0';
+  const directionField = side ? '1' : '0';
   const amountInStroops = BigInt(amountUsdc) * 10_000_000n;
 
   const commitmentState = await poseidon2Permutation([
@@ -44,7 +44,7 @@ async function placeBet(userSecretKey, direction, amountUsdc) {
   const nullifierHex = `0x${nullifier.toString(16).padStart(64, '0')}`;
 
   console.log('Save these values. You need them to claim winnings.');
-  console.log('direction:', direction ? 'YES' : 'NO');
+  console.log('position:', side ? 'YES shares' : 'NO shares');
   console.log('amount:', amountUsdc, 'USDC');
   console.log('salt:', salt);
   console.log('commitment:', commitmentHex);
@@ -108,7 +108,7 @@ async function placeBet(userSecretKey, direction, amountUsdc) {
       {
         commitment: commitmentHex,
         nullifier: nullifierHex,
-        direction: direction ? 'YES' : 'NO',
+        side: side ? 'YES' : 'NO',
         amount: amountUsdc,
         amountInStroops: amountInStroops.toString(),
         salt,
@@ -118,7 +118,7 @@ async function placeBet(userSecretKey, direction, amountUsdc) {
       2,
     ),
   );
-  console.log(`Private bet data saved to ${filename}`);
+  console.log(`Private share position saved to ${filename}`);
 }
 
 const [, , directionArg, amountArg] = process.argv;

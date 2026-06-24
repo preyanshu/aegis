@@ -58,11 +58,12 @@ async function claimWinnings(betDataFile, userSecretKey) {
   await initBarretenberg();
 
   const betData = JSON.parse(readFileSync(betDataFile, 'utf8'));
+  const betSide = betData.side || betData.direction;
   const userKeypair = Keypair.fromSecret(userSecretKey);
 
   const amountInStroops = BigInt(betData.amountInStroops);
   const commitmentState = await poseidon2Permutation([
-    betData.direction === 'YES' ? 1n : 0n,
+    betSide === 'YES' ? 1n : 0n,
     amountInStroops,
     saltToBigInt(betData.salt),
     0n,
@@ -82,12 +83,12 @@ async function claimWinnings(betDataFile, userSecretKey) {
     throw new Error('market has not been resolved yet');
   }
 
-  if (betData.direction !== (marketState.outcome ? 'YES' : 'NO')) {
+  if (betSide !== (marketState.outcome ? 'YES' : 'NO')) {
     throw new Error('this bet lost, so it cannot be registered for payout');
   }
 
   const inputs = {
-    direction: betData.direction === 'YES' ? '1' : '0',
+    direction: betSide === 'YES' ? '1' : '0',
     amount: amountInStroops.toString(),
     salt: betData.salt,
     commitment: betData.commitment ?? commitmentHex,
@@ -99,8 +100,8 @@ async function claimWinnings(betDataFile, userSecretKey) {
     resolved: marketState.resolved,
     outcome: marketState.outcome ? 'YES' : 'NO',
     total_committed: marketState.total_committed.toString(),
-    public_yes_quote_bps: marketState.public_yes_quote_bps.toString(),
-    public_no_quote_bps: marketState.public_no_quote_bps.toString(),
+    yes_share_quote_bps: marketState.public_yes_quote_bps.toString(),
+    no_share_quote_bps: marketState.public_no_quote_bps.toString(),
     registered_claim_amount: marketState.registered_claim_amount.toString(),
   });
 
