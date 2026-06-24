@@ -269,8 +269,13 @@ export async function loadSystemConfig() {
 }
 
 export async function loadMarketIds(signerLabel = "admin") {
-  const ids = await read<unknown[]>("get_market_ids", [], signerLabel);
-  return ids.map((id) => asHex(id));
+  const packed = await read<unknown>("get_market_ids", [], signerLabel);
+  const bytes = packed instanceof Uint8Array ? packed : hexToBytes(asHex(packed));
+  const ids: string[] = [];
+  for (let offset = 0; offset < bytes.length; offset += 32) {
+    ids.push(bytesToHex(bytes.slice(offset, offset + 32)));
+  }
+  return ids.filter((id) => id.length === 64);
 }
 
 export async function loadMarketView(marketId: string, signerLabel = "admin") {

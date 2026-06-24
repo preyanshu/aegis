@@ -461,8 +461,13 @@ impl BlindMarket {
         }
     }
 
-    pub fn get_market_ids(env: Env) -> SorobanVec<BytesN<32>> {
-        env.storage().instance().get(&MARKET_IDS_KEY).unwrap()
+    pub fn get_market_ids(env: Env) -> Bytes {
+        let ids: SorobanVec<BytesN<32>> = env.storage().instance().get(&MARKET_IDS_KEY).unwrap();
+        let mut out = Bytes::new(&env);
+        for id in ids.iter() {
+            out.append(&Bytes::from_slice(&env, &id.to_array()));
+        }
+        out
     }
 
     pub fn is_commitment_stored(env: Env, market_id: BytesN<32>, commitment: BytesN<32>) -> bool {
