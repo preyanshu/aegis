@@ -81,7 +81,7 @@ function deployContract(wasmHash, label, constructorArgs = []) {
   return contractId;
 }
 
-function initializeMarket(contractId, commitVerifierId, claimVerifierId) {
+function initializeMarket(contractId, commitVerifierId, tallyUpdateVerifierId, tallyFinalizeVerifierId, claimVerifierId) {
   runCli(
     [
       'contract',
@@ -124,13 +124,47 @@ function initializeMarket(contractId, commitVerifierId, claimVerifierId) {
       sourcePublicKey,
       '--commit_verifier',
       commitVerifierId,
+      '--tally_update_verifier',
+      tallyUpdateVerifierId,
+      '--tally_finalize_verifier',
+      tallyFinalizeVerifierId,
       '--claim_verifier',
       claimVerifierId,
     ],
     'set market verifiers',
   );
 
-  const marketId = process.env.MARKET_ID || deriveSaltHex();
+  runCli(
+    [
+      'contract',
+      'invoke',
+      '--id',
+      contractId,
+      '--source-account',
+      sourceAccount,
+      '--rpc-url',
+      rpcUrl,
+      '--network-passphrase',
+      networkPassphrase,
+      '--',
+      'set_shard_signers',
+      '--admin',
+      sourcePublicKey,
+      '--shard_signer_1',
+      sourcePublicKey,
+      '--shard_signer_2',
+      Keypair.fromSecret(process.env.USER2_SECRET_KEY).publicKey(),
+      '--shard_signer_3',
+      Keypair.fromSecret(process.env.USER3_SECRET_KEY).publicKey(),
+      '--shard_signer_4',
+      Keypair.fromSecret(process.env.USER2_SECRET_KEY).publicKey(),
+      '--shard_signer_5',
+      Keypair.fromSecret(process.env.USER3_SECRET_KEY).publicKey(),
+    ],
+    'set shard signers',
+  );
+
+  const marketId = process.env.DEPLOY_MARKET_ID || deriveSaltHex();
 
   updateEnv({
     MARKET_ID: marketId,
@@ -171,16 +205,32 @@ async function main() {
     '--vk_bytes-file-path',
     './verifier/commit_vk.bin',
   ]);
+  const tallyUpdateVerifierId = deployContract(verifierHash, 'tally update verifier', [
+    '--vk_bytes-file-path',
+    './verifier/tally_update_vk.bin',
+  ]);
+  const tallyFinalizeVerifierId = deployContract(verifierHash, 'tally finalize verifier', [
+    '--vk_bytes-file-path',
+    './verifier/tally_finalize_vk.bin',
+  ]);
   const claimVerifierId = deployContract(verifierHash, 'claim verifier', [
     '--vk_bytes-file-path',
     './verifier/claim_vk.bin',
   ]);
   const marketContractId = deployContract(marketHash, 'blind market');
 
-  initializeMarket(marketContractId, commitVerifierId, claimVerifierId);
+  initializeMarket(
+    marketContractId,
+    commitVerifierId,
+    tallyUpdateVerifierId,
+    tallyFinalizeVerifierId,
+    claimVerifierId,
+  );
 
   updateEnv({
     COMMIT_VERIFIER_ID: commitVerifierId,
+    TALLY_UPDATE_VERIFIER_ID: tallyUpdateVerifierId,
+    TALLY_FINALIZE_VERIFIER_ID: tallyFinalizeVerifierId,
     CLAIM_VERIFIER_ID: claimVerifierId,
     MARKET_CONTRACT_ID: marketContractId,
   });

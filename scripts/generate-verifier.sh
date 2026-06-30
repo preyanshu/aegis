@@ -61,4 +61,30 @@ write_solidity_verifier ./target/claim_vk "$ROOT_DIR/verifier/claim_verifier.sol
 write_vk_bin ./target/claim_vk/vk "$ROOT_DIR/verifier/claim_vk.bin"
 echo "Claim circuit done."
 
+echo "=== Compiling tally update circuit ==="
+cd "$ROOT_DIR/circuits/tally_update"
+nargo compile
+bb write_vk \
+  --scheme ultra_honk \
+  --oracle_hash keccak \
+  --bytecode_path ./target/tally_update.json \
+  --output_path ./target/tally_update_vk \
+  --output_format bytes_and_fields
+write_solidity_verifier ./target/tally_update_vk "$ROOT_DIR/verifier/tally_update_verifier.sol"
+write_vk_bin ./target/tally_update_vk/vk "$ROOT_DIR/verifier/tally_update_vk.bin"
+echo "Tally update circuit done."
+
+echo "=== Compiling tally finalize circuit ==="
+cd "$ROOT_DIR/circuits/tally_finalize"
+nargo compile
+bb write_vk \
+  --scheme ultra_honk \
+  --oracle_hash keccak \
+  --bytecode_path ./target/tally_finalize.json \
+  --output_path ./target/tally_finalize_vk \
+  --output_format bytes_and_fields
+write_solidity_verifier ./target/tally_finalize_vk "$ROOT_DIR/verifier/tally_finalize_verifier.sol"
+write_vk_bin ./target/tally_finalize_vk/vk "$ROOT_DIR/verifier/tally_finalize_vk.bin"
+echo "Tally finalize circuit done."
+
 echo "=== Verifier artifacts written to verifier/ ==="

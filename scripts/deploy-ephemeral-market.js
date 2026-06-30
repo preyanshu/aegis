@@ -96,6 +96,13 @@ async function deployContract(wasmHash) {
 
 async function initializeMarket(contractId) {
   const contract = new Contract(contractId);
+  const shardSigner1 = deployer.publicKey();
+  const shardSigner2 = process.env.USER2_SECRET_KEY
+    ? Keypair.fromSecret(process.env.USER2_SECRET_KEY).publicKey()
+    : deployer.publicKey();
+  const shardSigner3 = process.env.USER3_SECRET_KEY
+    ? Keypair.fromSecret(process.env.USER3_SECRET_KEY).publicKey()
+    : deployer.publicKey();
   await submit(
     contract.call(
       'initialize',
@@ -111,9 +118,24 @@ async function initializeMarket(contractId) {
       'set_verifiers',
       nativeToScVal(deployer.publicKey(), { type: 'address' }),
       nativeToScVal(Address.fromString(process.env.COMMIT_VERIFIER_ID), { type: 'address' }),
+      nativeToScVal(Address.fromString(process.env.TALLY_UPDATE_VERIFIER_ID), { type: 'address' }),
+      nativeToScVal(Address.fromString(process.env.TALLY_FINALIZE_VERIFIER_ID), { type: 'address' }),
       nativeToScVal(Address.fromString(process.env.CLAIM_VERIFIER_ID), { type: 'address' }),
     ),
     'set market verifiers',
+  );
+
+  await submit(
+    contract.call(
+      'set_shard_signers',
+      nativeToScVal(deployer.publicKey(), { type: 'address' }),
+      nativeToScVal(Address.fromString(shardSigner1), { type: 'address' }),
+      nativeToScVal(Address.fromString(shardSigner2), { type: 'address' }),
+      nativeToScVal(Address.fromString(shardSigner3), { type: 'address' }),
+      nativeToScVal(Address.fromString(shardSigner2), { type: 'address' }),
+      nativeToScVal(Address.fromString(shardSigner3), { type: 'address' }),
+    ),
+    'set shard signers',
   );
 
   execFileSync('node', ['./scripts/create-market.js', '--new'], {

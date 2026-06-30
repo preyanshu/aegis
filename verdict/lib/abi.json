@@ -1,0 +1,914 @@
+[
+	{
+	  "inputs": [
+		{
+		  "internalType": "address",
+		  "name": "_backendSigner",
+		  "type": "address"
+		},
+		{
+		  "internalType": "address",
+		  "name": "_vUSDC",
+		  "type": "address"
+		},
+		{
+		  "internalType": "address",
+		  "name": "_registry",
+		  "type": "address"
+		},
+		{
+		  "internalType": "address",
+		  "name": "_factory",
+		  "type": "address"
+		},
+		{
+		  "internalType": "address",
+		  "name": "_amm",
+		  "type": "address"
+		}
+	  ],
+	  "stateMutability": "nonpayable",
+	  "type": "constructor"
+	},
+	{
+	  "inputs": [],
+	  "name": "InvalidAddress",
+	  "type": "error"
+	},
+	{
+	  "inputs": [],
+	  "name": "MarketInactive",
+	  "type": "error"
+	},
+	{
+	  "inputs": [],
+	  "name": "OnlyBackend",
+	  "type": "error"
+	},
+	{
+	  "inputs": [
+		{
+		  "internalType": "address",
+		  "name": "owner",
+		  "type": "address"
+		}
+	  ],
+	  "name": "OwnableInvalidOwner",
+	  "type": "error"
+	},
+	{
+	  "inputs": [
+		{
+		  "internalType": "address",
+		  "name": "account",
+		  "type": "address"
+		}
+	  ],
+	  "name": "OwnableUnauthorizedAccount",
+	  "type": "error"
+	},
+	{
+	  "inputs": [],
+	  "name": "PermissionsAlreadyConfigured",
+	  "type": "error"
+	},
+	{
+	  "anonymous": false,
+	  "inputs": [
+		{
+		  "indexed": false,
+		  "internalType": "address",
+		  "name": "agent",
+		  "type": "address"
+		},
+		{
+		  "indexed": false,
+		  "internalType": "uint256",
+		  "name": "balance",
+		  "type": "uint256"
+		}
+	  ],
+	  "name": "AgentRegistered",
+	  "type": "event"
+	},
+	{
+	  "anonymous": false,
+	  "inputs": [
+		{
+		  "indexed": false,
+		  "internalType": "address",
+		  "name": "vUSDC",
+		  "type": "address"
+		},
+		{
+		  "indexed": false,
+		  "internalType": "address",
+		  "name": "registry",
+		  "type": "address"
+		},
+		{
+		  "indexed": false,
+		  "internalType": "address",
+		  "name": "factory",
+		  "type": "address"
+		},
+		{
+		  "indexed": false,
+		  "internalType": "address",
+		  "name": "amm",
+		  "type": "address"
+		}
+	  ],
+	  "name": "ContractsLinked",
+	  "type": "event"
+	},
+	{
+	  "anonymous": false,
+	  "inputs": [
+		{
+		  "indexed": false,
+		  "internalType": "uint256",
+		  "name": "round",
+		  "type": "uint256"
+		},
+		{
+		  "indexed": false,
+		  "internalType": "uint256",
+		  "name": "endTime",
+		  "type": "uint256"
+		}
+	  ],
+	  "name": "MarketStarted",
+	  "type": "event"
+	},
+	{
+	  "anonymous": false,
+	  "inputs": [
+		{
+		  "indexed": true,
+		  "internalType": "address",
+		  "name": "previousOwner",
+		  "type": "address"
+		},
+		{
+		  "indexed": true,
+		  "internalType": "address",
+		  "name": "newOwner",
+		  "type": "address"
+		}
+	  ],
+	  "name": "OwnershipTransferred",
+	  "type": "event"
+	},
+	{
+	  "anonymous": false,
+	  "inputs": [],
+	  "name": "PermissionsConfigured",
+	  "type": "event"
+	},
+	{
+	  "anonymous": false,
+	  "inputs": [
+		{
+		  "indexed": false,
+		  "internalType": "string",
+		  "name": "id",
+		  "type": "string"
+		},
+		{
+		  "indexed": false,
+		  "internalType": "address",
+		  "name": "yesToken",
+		  "type": "address"
+		},
+		{
+		  "indexed": false,
+		  "internalType": "bytes32",
+		  "name": "poolId",
+		  "type": "bytes32"
+		}
+	  ],
+	  "name": "ProposalLaunched",
+	  "type": "event"
+	},
+	{
+	  "anonymous": false,
+	  "inputs": [
+		{
+		  "indexed": false,
+		  "internalType": "string",
+		  "name": "id",
+		  "type": "string"
+		},
+		{
+		  "indexed": false,
+		  "internalType": "uint256",
+		  "name": "finalPrice",
+		  "type": "uint256"
+		}
+	  ],
+	  "name": "WinnerGraduated",
+	  "type": "event"
+	},
+	{
+	  "inputs": [],
+	  "name": "amm",
+	  "outputs": [
+		{
+		  "internalType": "contract VerdictSimpleAMM",
+		  "name": "",
+		  "type": "address"
+		}
+	  ],
+	  "stateMutability": "view",
+	  "type": "function"
+	},
+	{
+	  "inputs": [],
+	  "name": "backendSigner",
+	  "outputs": [
+		{
+		  "internalType": "address",
+		  "name": "",
+		  "type": "address"
+		}
+	  ],
+	  "stateMutability": "view",
+	  "type": "function"
+	},
+	{
+	  "inputs": [
+		{
+		  "internalType": "string",
+		  "name": "proposalId",
+		  "type": "string"
+		},
+		{
+		  "internalType": "string",
+		  "name": "name",
+		  "type": "string"
+		},
+		{
+		  "internalType": "string",
+		  "name": "description",
+		  "type": "string"
+		},
+		{
+		  "internalType": "string",
+		  "name": "evalLogic",
+		  "type": "string"
+		},
+		{
+		  "internalType": "string",
+		  "name": "mathLogic",
+		  "type": "string"
+		},
+		{
+		  "internalType": "uint256",
+		  "name": "resolutionDeadline",
+		  "type": "uint256"
+		},
+		{
+		  "internalType": "uint256",
+		  "name": "initialLiquidity",
+		  "type": "uint256"
+		}
+	  ],
+	  "name": "createProposal",
+	  "outputs": [],
+	  "stateMutability": "nonpayable",
+	  "type": "function"
+	},
+	{
+	  "inputs": [],
+	  "name": "currentRound",
+	  "outputs": [
+		{
+		  "internalType": "uint256",
+		  "name": "",
+		  "type": "uint256"
+		}
+	  ],
+	  "stateMutability": "view",
+	  "type": "function"
+	},
+	{
+	  "inputs": [],
+	  "name": "factory",
+	  "outputs": [
+		{
+		  "internalType": "contract VerdictYESTokenDeployerFactory",
+		  "name": "",
+		  "type": "address"
+		}
+	  ],
+	  "stateMutability": "view",
+	  "type": "function"
+	},
+	{
+	  "inputs": [],
+	  "name": "getDeployedContracts",
+	  "outputs": [
+		{
+		  "internalType": "address",
+		  "name": "_vUSDC",
+		  "type": "address"
+		},
+		{
+		  "internalType": "address",
+		  "name": "_registry",
+		  "type": "address"
+		},
+		{
+		  "internalType": "address",
+		  "name": "_factory",
+		  "type": "address"
+		},
+		{
+		  "internalType": "address",
+		  "name": "_amm",
+		  "type": "address"
+		}
+	  ],
+	  "stateMutability": "view",
+	  "type": "function"
+	},
+	{
+	  "inputs": [],
+	  "name": "getGraduatedProposals",
+	  "outputs": [
+		{
+		  "internalType": "string[]",
+		  "name": "",
+		  "type": "string[]"
+		}
+	  ],
+	  "stateMutability": "view",
+	  "type": "function"
+	},
+	{
+	  "inputs": [
+		{
+		  "internalType": "string",
+		  "name": "proposalId",
+		  "type": "string"
+		}
+	  ],
+	  "name": "getPoolReserves",
+	  "outputs": [
+		{
+		  "internalType": "uint256",
+		  "name": "vUSDCReserve",
+		  "type": "uint256"
+		},
+		{
+		  "internalType": "uint256",
+		  "name": "yesReserve",
+		  "type": "uint256"
+		}
+	  ],
+	  "stateMutability": "view",
+	  "type": "function"
+	},
+	{
+	  "inputs": [
+		{
+		  "internalType": "string",
+		  "name": "id",
+		  "type": "string"
+		}
+	  ],
+	  "name": "getProposalStatus",
+	  "outputs": [
+		{
+		  "components": [
+			{
+			  "internalType": "string",
+			  "name": "id",
+			  "type": "string"
+			},
+			{
+			  "internalType": "string",
+			  "name": "name",
+			  "type": "string"
+			},
+			{
+			  "internalType": "string",
+			  "name": "description",
+			  "type": "string"
+			},
+			{
+			  "internalType": "string",
+			  "name": "evaluationLogic",
+			  "type": "string"
+			},
+			{
+			  "internalType": "string",
+			  "name": "mathematicalLogic",
+			  "type": "string"
+			},
+			{
+			  "internalType": "uint256",
+			  "name": "resolutionDeadline",
+			  "type": "uint256"
+			},
+			{
+			  "internalType": "address",
+			  "name": "poolAddress",
+			  "type": "address"
+			},
+			{
+			  "internalType": "bool",
+			  "name": "resolved",
+			  "type": "bool"
+			},
+			{
+			  "internalType": "bool",
+			  "name": "isWinner",
+			  "type": "bool"
+			},
+			{
+			  "internalType": "uint256",
+			  "name": "yesTWAP",
+			  "type": "uint256"
+			},
+			{
+			  "internalType": "uint256",
+			  "name": "timestamp",
+			  "type": "uint256"
+			}
+		  ],
+		  "internalType": "struct VerdictProposalRegistryStorage.Proposal",
+		  "name": "",
+		  "type": "tuple"
+		}
+	  ],
+	  "stateMutability": "view",
+	  "type": "function"
+	},
+	{
+	  "inputs": [],
+	  "name": "getRoundInfo",
+	  "outputs": [
+		{
+		  "components": [
+			{
+			  "internalType": "uint256",
+			  "name": "roundNumber",
+			  "type": "uint256"
+			},
+			{
+			  "internalType": "uint256",
+			  "name": "roundStartTime",
+			  "type": "uint256"
+			},
+			{
+			  "internalType": "uint256",
+			  "name": "roundEndTime",
+			  "type": "uint256"
+			},
+			{
+			  "internalType": "uint256",
+			  "name": "roundDuration",
+			  "type": "uint256"
+			},
+			{
+			  "internalType": "string[]",
+			  "name": "proposalIds",
+			  "type": "string[]"
+			},
+			{
+			  "internalType": "bool",
+			  "name": "active",
+			  "type": "bool"
+			}
+		  ],
+		  "internalType": "struct VerdictProposalRegistryStorage.Market",
+		  "name": "",
+		  "type": "tuple"
+		}
+	  ],
+	  "stateMutability": "view",
+	  "type": "function"
+	},
+	{
+	  "inputs": [
+		{
+		  "internalType": "string",
+		  "name": "proposalId",
+		  "type": "string"
+		},
+		{
+		  "internalType": "address",
+		  "name": "tokenIn",
+		  "type": "address"
+		},
+		{
+		  "internalType": "uint256",
+		  "name": "amountIn",
+		  "type": "uint256"
+		}
+	  ],
+	  "name": "getSwapQuote",
+	  "outputs": [
+		{
+		  "internalType": "uint256",
+		  "name": "",
+		  "type": "uint256"
+		}
+	  ],
+	  "stateMutability": "view",
+	  "type": "function"
+	},
+	{
+	  "inputs": [
+		{
+		  "internalType": "address",
+		  "name": "user",
+		  "type": "address"
+		}
+	  ],
+	  "name": "getVUSDCBalance",
+	  "outputs": [
+		{
+		  "internalType": "uint256",
+		  "name": "",
+		  "type": "uint256"
+		}
+	  ],
+	  "stateMutability": "view",
+	  "type": "function"
+	},
+	{
+	  "inputs": [
+		{
+		  "internalType": "string",
+		  "name": "proposalId",
+		  "type": "string"
+		},
+		{
+		  "internalType": "address",
+		  "name": "user",
+		  "type": "address"
+		}
+	  ],
+	  "name": "getYESBalance",
+	  "outputs": [
+		{
+		  "internalType": "uint256",
+		  "name": "",
+		  "type": "uint256"
+		}
+	  ],
+	  "stateMutability": "view",
+	  "type": "function"
+	},
+	{
+	  "inputs": [
+		{
+		  "internalType": "string",
+		  "name": "proposalId",
+		  "type": "string"
+		}
+	  ],
+	  "name": "getYESPrice",
+	  "outputs": [
+		{
+		  "internalType": "uint256",
+		  "name": "",
+		  "type": "uint256"
+		}
+	  ],
+	  "stateMutability": "view",
+	  "type": "function"
+	},
+	{
+	  "inputs": [
+		{
+		  "internalType": "string",
+		  "name": "proposalId",
+		  "type": "string"
+		}
+	  ],
+	  "name": "getYesTokenAddress",
+	  "outputs": [
+		{
+		  "internalType": "address",
+		  "name": "",
+		  "type": "address"
+		}
+	  ],
+	  "stateMutability": "view",
+	  "type": "function"
+	},
+	{
+	  "inputs": [
+		{
+		  "internalType": "string",
+		  "name": "proposalId",
+		  "type": "string"
+		},
+		{
+		  "internalType": "uint256",
+		  "name": "finalPrice",
+		  "type": "uint256"
+		}
+	  ],
+	  "name": "graduateProposal",
+	  "outputs": [],
+	  "stateMutability": "nonpayable",
+	  "type": "function"
+	},
+	{
+	  "inputs": [
+		{
+		  "internalType": "uint256",
+		  "name": "duration",
+		  "type": "uint256"
+		}
+	  ],
+	  "name": "initializeMarket",
+	  "outputs": [],
+	  "stateMutability": "nonpayable",
+	  "type": "function"
+	},
+	{
+	  "inputs": [
+		{
+		  "internalType": "uint256",
+		  "name": "duration",
+		  "type": "uint256"
+		},
+		{
+		  "components": [
+			{
+			  "internalType": "string",
+			  "name": "id",
+			  "type": "string"
+			},
+			{
+			  "internalType": "string",
+			  "name": "name",
+			  "type": "string"
+			},
+			{
+			  "internalType": "string",
+			  "name": "description",
+			  "type": "string"
+			},
+			{
+			  "internalType": "string",
+			  "name": "evalLogic",
+			  "type": "string"
+			},
+			{
+			  "internalType": "string",
+			  "name": "mathLogic",
+			  "type": "string"
+			},
+			{
+			  "internalType": "uint256",
+			  "name": "resolutionDeadline",
+			  "type": "uint256"
+			},
+			{
+			  "internalType": "uint256",
+			  "name": "initialLiquidity",
+			  "type": "uint256"
+			}
+		  ],
+		  "internalType": "struct VerdictPredictionMarketRouter.ProposalInput[]",
+		  "name": "proposalsToCreate",
+		  "type": "tuple[]"
+		}
+	  ],
+	  "name": "initializeMarketWithProposals",
+	  "outputs": [],
+	  "stateMutability": "nonpayable",
+	  "type": "function"
+	},
+	{
+	  "inputs": [],
+	  "name": "isMarketActive",
+	  "outputs": [
+		{
+		  "internalType": "bool",
+		  "name": "",
+		  "type": "bool"
+		}
+	  ],
+	  "stateMutability": "view",
+	  "type": "function"
+	},
+	{
+	  "inputs": [],
+	  "name": "owner",
+	  "outputs": [
+		{
+		  "internalType": "address",
+		  "name": "",
+		  "type": "address"
+		}
+	  ],
+	  "stateMutability": "view",
+	  "type": "function"
+	},
+	{
+	  "inputs": [],
+	  "name": "permissionsConfigured",
+	  "outputs": [
+		{
+		  "internalType": "bool",
+		  "name": "",
+		  "type": "bool"
+		}
+	  ],
+	  "stateMutability": "view",
+	  "type": "function"
+	},
+	{
+	  "inputs": [
+		{
+		  "internalType": "string",
+		  "name": "",
+		  "type": "string"
+		}
+	  ],
+	  "name": "proposalToPoolId",
+	  "outputs": [
+		{
+		  "internalType": "bytes32",
+		  "name": "",
+		  "type": "bytes32"
+		}
+	  ],
+	  "stateMutability": "view",
+	  "type": "function"
+	},
+	{
+	  "inputs": [
+		{
+		  "internalType": "string",
+		  "name": "",
+		  "type": "string"
+		}
+	  ],
+	  "name": "proposalToYesToken",
+	  "outputs": [
+		{
+		  "internalType": "address",
+		  "name": "",
+		  "type": "address"
+		}
+	  ],
+	  "stateMutability": "view",
+	  "type": "function"
+	},
+	{
+	  "inputs": [
+		{
+		  "internalType": "address",
+		  "name": "agent",
+		  "type": "address"
+		}
+	  ],
+	  "name": "registerAgent",
+	  "outputs": [],
+	  "stateMutability": "nonpayable",
+	  "type": "function"
+	},
+	{
+	  "inputs": [
+		{
+		  "internalType": "address[]",
+		  "name": "agents",
+		  "type": "address[]"
+		}
+	  ],
+	  "name": "registerAgentsBatch",
+	  "outputs": [],
+	  "stateMutability": "nonpayable",
+	  "type": "function"
+	},
+	{
+	  "inputs": [],
+	  "name": "registry",
+	  "outputs": [
+		{
+		  "internalType": "contract VerdictProposalRegistryStorage",
+		  "name": "",
+		  "type": "address"
+		}
+	  ],
+	  "stateMutability": "view",
+	  "type": "function"
+	},
+	{
+	  "inputs": [],
+	  "name": "renounceOwnership",
+	  "outputs": [],
+	  "stateMutability": "nonpayable",
+	  "type": "function"
+	},
+	{
+	  "inputs": [
+		{
+		  "internalType": "address",
+		  "name": "agent",
+		  "type": "address"
+		}
+	  ],
+	  "name": "resetAgentBalanceTo100",
+	  "outputs": [],
+	  "stateMutability": "nonpayable",
+	  "type": "function"
+	},
+	{
+	  "inputs": [
+		{
+		  "internalType": "address[]",
+		  "name": "agents",
+		  "type": "address[]"
+		}
+	  ],
+	  "name": "resetAgentsBalanceTo100Batch",
+	  "outputs": [],
+	  "stateMutability": "nonpayable",
+	  "type": "function"
+	},
+	{
+	  "inputs": [],
+	  "name": "setupPermissions",
+	  "outputs": [],
+	  "stateMutability": "nonpayable",
+	  "type": "function"
+	},
+	{
+	  "inputs": [
+		{
+		  "internalType": "string",
+		  "name": "proposalId",
+		  "type": "string"
+		},
+		{
+		  "internalType": "address",
+		  "name": "tokenIn",
+		  "type": "address"
+		},
+		{
+		  "internalType": "uint256",
+		  "name": "amountIn",
+		  "type": "uint256"
+		},
+		{
+		  "internalType": "uint256",
+		  "name": "minAmountOut",
+		  "type": "uint256"
+		}
+	  ],
+	  "name": "swap",
+	  "outputs": [
+		{
+		  "internalType": "uint256",
+		  "name": "amountOut",
+		  "type": "uint256"
+		}
+	  ],
+	  "stateMutability": "nonpayable",
+	  "type": "function"
+	},
+	{
+	  "inputs": [
+		{
+		  "internalType": "address",
+		  "name": "newOwner",
+		  "type": "address"
+		}
+	  ],
+	  "name": "transferOwnership",
+	  "outputs": [],
+	  "stateMutability": "nonpayable",
+	  "type": "function"
+	},
+	{
+	  "inputs": [],
+	  "name": "userFaucet",
+	  "outputs": [],
+	  "stateMutability": "nonpayable",
+	  "type": "function"
+	},
+	{
+	  "inputs": [],
+	  "name": "vUSDCToken",
+	  "outputs": [
+		{
+		  "internalType": "contract VerdictVirtualUSDCToken",
+		  "name": "",
+		  "type": "address"
+		}
+	  ],
+	  "stateMutability": "view",
+	  "type": "function"
+	}
+  ]
+  

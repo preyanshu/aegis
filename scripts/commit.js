@@ -36,13 +36,13 @@ async function placeBet(userSecretKey, side, amountUsdc) {
   const amountInStroops = BigInt(amountUsdc) * 10_000_000n;
 
   const commitmentState = await poseidon2Permutation([
+    BigInt(`0x${marketId}`) & ((1n << 248n) - 1n),
     BigInt(directionField),
     amountInStroops,
     BigInt(salt),
-    0n,
   ]);
   const commitment = BigInt(commitmentState[0]);
-  const nullifierState = await poseidon2Permutation([BigInt(salt), 12345n, 0n, 0n]);
+  const nullifierState = await poseidon2Permutation([BigInt(`0x${marketId}`) & ((1n << 248n) - 1n), BigInt(salt), 12345n, 0n]);
   const nullifier = BigInt(nullifierState[0]);
   const commitmentHex = `0x${commitment.toString(16).padStart(64, '0')}`;
   const nullifierHex = `0x${nullifier.toString(16).padStart(64, '0')}`;
@@ -61,6 +61,7 @@ async function placeBet(userSecretKey, side, amountUsdc) {
     amount: amountInStroops.toString(),
     salt,
     commitment: commitmentHex,
+    market_id: (BigInt(`0x${marketId}`) & ((1n << 248n) - 1n)).toString(),
     min_amount: minBet.toString(),
     max_amount: maxBet.toString(),
   };
@@ -89,17 +90,17 @@ async function placeBet(userSecretKey, side, amountUsdc) {
       '--network-passphrase',
       process.env.STELLAR_NETWORK,
       '--',
-      'commit',
+      'commit_position',
       '--market_id',
       marketId,
-      '--user',
+      '--owner',
       userKeypair.publicKey(),
       '--commitment',
       commitmentHex.slice(2),
-      '--proof-file-path',
-      proofPath,
-      '--amount',
+      '--collateral_amount',
       amountInStroops.toString(),
+      '--proof',
+      proofPath,
     ],
     { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
   );

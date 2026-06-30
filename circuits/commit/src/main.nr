@@ -5,10 +5,11 @@ fn main(
     amount: pub Field,
     salt: Field,
     commitment: pub Field,
+    market_id: pub Field,
     min_amount: pub Field,
     max_amount: pub Field,
 ) {
-    let hash_state: [Field; 4] = poseidon2_permutation([direction, amount, salt, 0], 4);
+    let hash_state: [Field; 4] = poseidon2_permutation([market_id, direction, amount, salt], 4);
     let computed_commitment = hash_state[0];
     assert(computed_commitment == commitment, "commitment mismatch");
 

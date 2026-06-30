@@ -45,14 +45,11 @@ function readMarketState(marketId) {
   );
   const raw = JSON.parse(output);
   return {
-    total_committed: BigInt(raw.total_committed),
-    public_yes_quote_bps: BigInt(raw.public_yes_quote_bps),
-    public_no_quote_bps: BigInt(raw.public_no_quote_bps),
-    registered_claim_amount: BigInt(raw.registered_claim_amount),
+    total_locked_collateral: BigInt(raw.total_locked_collateral),
     resolved: raw.resolved,
     outcome: raw.outcome,
-    outcome_price: BigInt(raw.outcome_price),
     distributable_pot: BigInt(raw.distributable_pot),
+    winning_side_total: BigInt(raw.winning_side_total),
   };
 }
 
@@ -69,12 +66,12 @@ async function claimWinnings(betDataFile, userSecretKey) {
 
   const amountInStroops = BigInt(betData.amountInStroops);
   const commitmentState = await poseidon2Permutation([
+    BigInt(`0x${marketId}`) & ((1n << 248n) - 1n),
     betSide === 'YES' ? 1n : 0n,
     amountInStroops,
     saltToBigInt(betData.salt),
-    0n,
   ]);
-  const nullifierState = await poseidon2Permutation([saltToBigInt(betData.salt), 12345n, 0n, 0n]);
+  const nullifierState = await poseidon2Permutation([BigInt(`0x${marketId}`) & ((1n << 248n) - 1n), saltToBigInt(betData.salt), 12345n, 0n]);
   const commitment = BigInt(commitmentState[0]);
   const nullifier = BigInt(nullifierState[0]);
   const nullifierHex = `0x${nullifier.toString(16).padStart(64, '0')}`;
@@ -98,17 +95,19 @@ async function claimWinnings(betDataFile, userSecretKey) {
     amount: amountInStroops.toString(),
     salt: betData.salt,
     commitment: betData.commitment ?? commitmentHex,
+    market_id: (BigInt(`0x${marketId}`) & ((1n << 248n) - 1n)).toString(),
     outcome: marketState.outcome ? '1' : '0',
     nullifier: nullifierHex,
+    distributable_pot: marketState.distributable_pot.toString(),
+    winning_side_total: marketState.winning_side_total.toString(),
+    payout: ((amountInStroops * marketState.distributable_pot) / marketState.winning_side_total).toString(),
   };
 
   console.log('Market state:', {
     resolved: marketState.resolved,
     outcome: marketState.outcome ? 'YES' : 'NO',
-    total_committed: marketState.total_committed.toString(),
-    yes_share_quote_bps: marketState.public_yes_quote_bps.toString(),
-    no_share_quote_bps: marketState.public_no_quote_bps.toString(),
-    registered_claim_amount: marketState.registered_claim_amount.toString(),
+    total_locked_collateral: marketState.total_locked_collateral.toString(),
+    winning_side_total: marketState.winning_side_total.toString(),
     marketId,
   });
 
@@ -136,18 +135,16 @@ async function claimWinnings(betDataFile, userSecretKey) {
       '--network-passphrase',
       process.env.STELLAR_NETWORK,
       '--',
-      'register_win',
+      'claim_winnings',
       '--market_id',
       marketId,
-      '--user',
-      userKeypair.publicKey(),
       '--commitment',
       betData.commitment.slice(2),
-      '--amount',
-      amountInStroops.toString(),
       '--nullifier',
       nullifierHex.slice(2),
-      '--proof-file-path',
+      '--recipient',
+      userKeypair.publicKey(),
+      '--proof',
       proofPath,
     ],
     { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },

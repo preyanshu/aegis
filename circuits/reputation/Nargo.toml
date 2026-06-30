@@ -1,0 +1,7 @@
+[package]
+name = "reputation"
+type = "bin"
+authors = ["BlindMarket"]
+compiler_version = ">=0.38.0"
+
+[dependencies]

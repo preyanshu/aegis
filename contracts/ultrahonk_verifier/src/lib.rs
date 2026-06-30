@@ -66,25 +66,30 @@ impl UltraHonkVerifierContract {
 
     /// Verify an UltraHonk proof using the stored VK.
     pub fn verify_proof(env: Env, public_inputs: Bytes, proof_bytes: Bytes) -> Result<(), Error> {
+        env.events().publish((symbol_short!("v_stage"),), 1u32);
         if proof_bytes.len() as usize != PROOF_BYTES {
             return Err(Error::ProofParseError);
         }
 
+        env.events().publish((symbol_short!("v_stage"),), 2u32);
         let vk_bytes: Bytes = env
             .storage()
             .instance()
             .get(&Self::key_vk())
             .ok_or(Error::VkNotSet)?;
+        env.events().publish((symbol_short!("v_stage"),), 3u32);
         // Deserialize verification key bytes
         let verifier = UltraHonkVerifier::new(&env, &vk_bytes).map_err(|e| match e {
             VkLoadError::WrongLength => Error::VkInvalidLength,
             VkLoadError::InvalidParameters => Error::VkInvalidParameters,
         })?;
+        env.events().publish((symbol_short!("v_stage"),), 4u32);
 
         // Verify
         verifier
             .verify(&env, &proof_bytes, &public_inputs)
             .map_err(|_| Error::VerificationFailed)?;
+        env.events().publish((symbol_short!("v_stage"),), 5u32);
         Ok(())
     }
 }

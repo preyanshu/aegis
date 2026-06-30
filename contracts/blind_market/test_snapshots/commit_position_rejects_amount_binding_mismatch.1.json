@@ -1,0 +1,1646 @@
+{
+  "generators": {
+    "address": 8,
+    "nonce": 0,
+    "mux_id": 0
+  },
+  "auth": [
+    [],
+    [
+      [
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJXFF",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN",
+              "function_name": "set_admin",
+              "args": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ],
+    [
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN",
+              "function_name": "mint",
+              "args": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                },
+                {
+                  "i128": "50000000"
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ],
+    [],
+    [],
+    [],
+    [],
+    [],
+    [
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5",
+              "function_name": "initialize",
+              "args": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                },
+                {
+                  "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ],
+    [
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5",
+              "function_name": "set_verifiers",
+              "args": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ],
+    [
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5",
+              "function_name": "create_market",
+              "args": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                },
+                {
+                  "bytes": "00000000000000000000000000000000000000000000000000000000000000a1"
+                },
+                {
+                  "string": "Will BTC be >= 100?"
+                },
+                {
+                  "string": "macro"
+                },
+                {
+                  "map": [
+                    {
+                      "key": {
+                        "symbol": "condition_1"
+                      },
+                      "val": {
+                        "map": [
+                          {
+                            "key": {
+                              "symbol": "asset_symbol"
+                            },
+                            "val": {
+                              "symbol": "BTC"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "greater_or_equal"
+                            },
+                            "val": {
+                              "bool": true
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "oracle_contract"
+                            },
+                            "val": {
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "threshold"
+                            },
+                            "val": {
+                              "i128": "100"
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "condition_2"
+                      },
+                      "val": {
+                        "map": [
+                          {
+                            "key": {
+                              "symbol": "asset_symbol"
+                            },
+                            "val": {
+                              "symbol": "BTC"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "greater_or_equal"
+                            },
+                            "val": {
+                              "bool": true
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "oracle_contract"
+                            },
+                            "val": {
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "threshold"
+                            },
+                            "val": {
+                              "i128": "100"
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "condition_3"
+                      },
+                      "val": {
+                        "map": [
+                          {
+                            "key": {
+                              "symbol": "asset_symbol"
+                            },
+                            "val": {
+                              "symbol": "BTC"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "greater_or_equal"
+                            },
+                            "val": {
+                              "bool": true
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "oracle_contract"
+                            },
+                            "val": {
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "threshold"
+                            },
+                            "val": {
+                              "i128": "100"
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "condition_4"
+                      },
+                      "val": {
+                        "map": [
+                          {
+                            "key": {
+                              "symbol": "asset_symbol"
+                            },
+                            "val": {
+                              "symbol": "BTC"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "greater_or_equal"
+                            },
+                            "val": {
+                              "bool": true
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "oracle_contract"
+                            },
+                            "val": {
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "threshold"
+                            },
+                            "val": {
+                              "i128": "100"
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "condition_5"
+                      },
+                      "val": {
+                        "map": [
+                          {
+                            "key": {
+                              "symbol": "asset_symbol"
+                            },
+                            "val": {
+                              "symbol": "BTC"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "greater_or_equal"
+                            },
+                            "val": {
+                              "bool": true
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "oracle_contract"
+                            },
+                            "val": {
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "threshold"
+                            },
+                            "val": {
+                              "i128": "100"
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "condition_count"
+                      },
+                      "val": {
+                        "u32": 1
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "operator_1_is_and"
+                      },
+                      "val": {
+                        "bool": true
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "operator_2_is_and"
+                      },
+                      "val": {
+                        "bool": true
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "operator_3_is_and"
+                      },
+                      "val": {
+                        "bool": true
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "operator_4_is_and"
+                      },
+                      "val": {
+                        "bool": true
+                      }
+                    }
+                  ]
+                },
+                {
+                  "u64": "1720000300"
+                },
+                {
+                  "i128": "10000000"
+                },
+                {
+                  "i128": "20000000"
+                },
+                {
+                  "u32": 0
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ],
+    []
+  ],
+  "ledger": {
+    "protocol_version": 26,
+    "sequence_number": 100,
+    "timestamp": 1720000000,
+    "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
+    "base_reserve": 10,
+    "min_persistent_entry_ttl": 16,
+    "min_temp_entry_ttl": 16,
+    "max_entry_ttl": 1000,
+    "ledger_entries": [
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "account": {
+              "account_id": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJXFF",
+              "balance": "0",
+              "seq_num": "0",
+              "num_sub_entries": 0,
+              "inflation_dest": null,
+              "flags": 0,
+              "home_domain": "",
+              "thresholds": "01010101",
+              "signers": [],
+              "ext": "v0"
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": null
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJXFF",
+              "key": {
+                "ledger_key_nonce": {
+                  "nonce": "801925984706572462"
+                }
+              },
+              "durability": "temporary",
+              "val": "void"
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 1099
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": {
+                "ledger_key_nonce": {
+                  "nonce": "1033654523790656264"
+                }
+              },
+              "durability": "temporary",
+              "val": "void"
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 1099
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": {
+                "ledger_key_nonce": {
+                  "nonce": "4837995959683129791"
+                }
+              },
+              "durability": "temporary",
+              "val": "void"
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 1099
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": {
+                "ledger_key_nonce": {
+                  "nonce": "5541220902715666415"
+                }
+              },
+              "durability": "temporary",
+              "val": "void"
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 1099
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+              "key": {
+                "ledger_key_nonce": {
+                  "nonce": "2032731177588607455"
+                }
+              },
+              "durability": "temporary",
+              "val": "void"
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 1099
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
+              "key": "ledger_key_contract_instance",
+              "durability": "persistent",
+              "val": {
+                "contract_instance": {
+                  "executable": {
+                    "wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  "storage": [
+                    {
+                      "key": {
+                        "symbol": "price"
+                      },
+                      "val": {
+                        "i128": "150"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 115
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
+              "key": "ledger_key_contract_instance",
+              "durability": "persistent",
+              "val": {
+                "contract_instance": {
+                  "executable": {
+                    "wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  "storage": [
+                    {
+                      "key": {
+                        "symbol": "vk"
+                      },
+                      "val": {
+                        "bytes": "0000000000001000000000000000000c0000000000000015000000000000000100d81f8fe58f482329f274b4812b59fc0ea843dc89a6b0b440f6156c5a76c0a624ed8d81fadc0ea3effff918680b219e4e959a55ab856901ff2d5ec50774ef6f0c12d16017a02bd4430746cf16c9b06afa99e9cf35db895ee117a995b32e5b4426c021ca3fbfd99e49fb05b29a65a36ecdb89242defb1b9518a9f527b56d2f611485beafa777d321a7aac3b1b8958a3035d0a67db50b11139b4ed1f1a46ae3a629af337f88c385b22452199cf0409fa59356befdfc977af5d4552b8c339cb02f04a82f1f03aef13d1087a3d935b82163fb7bb036190b18b8217f745634bb675c166c8e576ee925f1f595512c42b91bbeacb92b2aaee05340b79cbd562e74b8c504668b15795b289971cb0b51c6dac06c1c3f784eb47b26f1da2faed0c14f3bef038c8e0d00ddee9b52c2c21320139e1f9b464ff664f7f669402f85a020f595f91abf660974e9f6f4237c442d938745aa105f1a26d3385093ac840f60a1561e840bc3e29423d499cd12ee8eb03ce649d936e1e404edb2c64bf397d380995ebbdb17901a5df32166594b3e7945c24ae9b96c09c27ca328c08dd3e4d940d8184e581a0871ddfc99e108eb0e1735956790da52e2b7832015c0a07d894e2367764803267da41670ee22678700703447def1d9e6e6a60188fc464d42a0b5bb5f2b3f6e0fa2bf2e741bbb9ffdd5dae2ee2938ea0719f730c33ff2afeae996877c226ec31fc47886549be97b11b192a72e04e788758d924e0c6c0947b6135ebb3a061beb2fa6acc2b1ea0ad8be03834deb8f5375176e8f5bf845ff61549d4ccc62f3746921064db52547ff6aa3c3fe9c112ccd896d785d71fbbbe4a1196e2414737c0f3e0859e1ff08fd9c932e8c97fd6352e2c57618d1bce6d549952a74b52521cc0a390ca4d48b92bb862f8490410a29cd75808ebb5fc4e0580031592d474f60457e7727bbe81321ab6a537ae9ee47108c9647ff7bb0b597d8d08fb5e7b157362dae1803e4d6e9d757b6be8c319180fa0ee5d1224d2226d0378b1b6a366f0553330ee2093859b64a4ffff0d38e62321e29bbe16af2a4bd8d3186d5163ec0094d488b3f1a57007c34975bd667c018da3a6e065e3faf3c90133ca004df1b613361c5c2171216f397d174a6e7f7d4468f0ccae353efb95c65849f341fe7129a898a6fd827142c664e70f0ccc7e9861e08b989fdcb470ef85905d70f2a6ee674e4ac6336141be71c516e2a54a322d416fb3bd0d30dee4904837dbaf885d8dabc30941041db26d9fa886bfc26a11f747366b4928d85763e96a238fce1fa54fa87993689bb2523dd40bb2c96ef5511baea55ca2feb60b878d78aae230076d86e58abc5a5e9a11054884e19955c94df8e4f33a2264dd8fb18387d288e28469119c9ba4b211b471fc71fc5c61e6fbdb81d224770a13ecb15349f7181cb737e089a637af85f5d082f1e8b3ff9389b3012ee61ec1c990322715df3476e70625da0f1cd20e035b6041dd38e945fdcb7689a4126147c4859212a8dfd16f2440d539f805aabf754fb8a099944d1139fa13acbddfc7376e80ed486c18251e8f2d39e4640bb83595434732da502068cf8e1c623108899a56e69053a2cc9dc15260e430ba402e25a46d8cd0868c093453a15eccf0738d3d530dab3d6d81c9ad4508d9806abb28f22d357cb13077983a34a5b719f6ef1762b7fab379e3d906894d7cadce140048312b7d07b2c2ff6863b58e1e3ef23ccc4f02a38110f7dbf282aba82de26b8cb48b443465b02b0b6a2ac5dce36be3d8a6d32bb458854ff53dfb8bc93db4c3ff68f5389b96d185476357cf9389e641318aab5de3d9a0e1fce6f2a18ff16afe712aa3a8cbdbd2f1b1e5f27daddbeced2a0971c273663a5f9174e29981879eeaaa0e580f4589a10b46142e7f947b7a21fd32677fffb0b12a1013d0cc7fdc84baa557d5b1afa9911c4a4881584171cb0e76816f9c6da062528dc18828ae67ad8e8cfda5c2da406268512ad9304329ec436e6c09ba70903f1e3ae87df417a381658bcb601feabc9299218495f42c0ec475069b877610fce3a681f73e68277ffe55186950f8cd19a20881f3a517026eb9f9950d48638cc575ddd16330fba02bafe5475a8e24825fc20a51001b706a493cf9aa7824360918fb71fe8ae6a52c43e49ab977e0c89cc010fab145308f37f342d1b08e3689194faf00bf4c268d8a2737430b8a61f60b40b2fd041b125adfad0f02c99b7e7c5298141d1fe8648f2bba9042648a387fd002d0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000205479d930fccfbca9081c02473635efee568e15289feb5b3c9e28153f40da7882156a91955143044bdbdb2ca237161197d69f1f439b8f6657e08e3e7fe80efdf"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 115
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM",
+              "key": "ledger_key_contract_instance",
+              "durability": "persistent",
+              "val": {
+                "contract_instance": {
+                  "executable": {
+                    "wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  "storage": [
+                    {
+                      "key": {
+                        "symbol": "vk"
+                      },
+                      "val": {
+                        "bytes": "0000000000001000000000000000000c000000000000001700000000000000010332a3cef7abd7df96727578ef9a4fa878bc8ca37aaf21209c10e9d735af688f0c906bd862dcd44a400ff669439e9df2794aa9a5ad35d97419a12b01102f0bb010f1b671989cc1ee310145e7c335123c80c69d5b298dc1ae5df0181443b16b3d110fb5b4d14cd422e93fba01234711f448576bf4b95cbd9b6cb58ed266f06971305be17928d4ca5f9256f7d6210cb33a6fb2276816e4540d60ecfe2a01e40e48107cff54622b2fc95834866fcb822d7043b8e20a934543d08e92da4729782cb00852eb2f97176e167ef8cecbc56b92abd362d64a019e672fc34f8bb861ad9f4e123f7293182bba74416ab17882ca26359c469c44801a34a773fb60bc9c6aa5ff16f122ba39516b17f37ca20e22c932fa7c85abb8f18634cf78824d27e26707221b10c7b92f1bb525176a964090eef8ef0c1c1d9b4b6c3470f5fbfe2f8a51d42a0e186aa840bcb65e2ac33f582140b172ef73d4c713d341754a415019fcf1d701301a76b5df5e944380c290a35014d860a2d274db9c820c3e6c1d5f52074158e51958b13f38f58756e23989a418de3c113d47a2256ba6f60a9e2ec0523c52a991286c1d4c53af6654de284fbb620f90a9e00aa9470a9e3c58a56cc81e212df9232a52064e5718a3b1b2319cf2f761fe78cea78b7473051e89411bb2e3f052d52a2df08235b7724f39371553204c8d831f091e429b793157169bf5ff8d8c26db8e1759a515cfa94290aa4131c12201090a2e8305f961d72671571b55772bda003223d8fe8310013aea6d717a611721922c54e24230f70fc31e76a42d45ab55bf9d194d3ee9b0766db72a24739e502c312cae12407cb9111c354c705f68636fd8f82493961298ab1897f207329a7dae9d7d9655c9610a299a1728e54f0c81fbe8a62d536a955c712eb0a3b244166a7de7f88e4638f6dee733a70dfaf5b9b32c438918b8013e4cb81ea8a2821b541092a40e779507cd12404dd6f3e2e37b6d38a3d12571b564c7e31c0c4961bebd747599c3ca597c9121734401998c71b579da39eb00baf0373358f6385f3730975dd723a258a0ad9b59c86a6139a0dc064484474e0e1f4dd87c71f55d8880516b3f1254cebb417d9354687ec95f601081d6cad6630d7d3e45973d97edccc6cd4a0c32940574a47a442c5640e7ee7bfe61075a979301dc3261bc24584f569ad1e1eb4a965f7772d55540a7a9ce07945a9d10e1804f1a246ecfff8f00e48ab75ca4debffce9a047af83da324500be2cf6179fde07801319cb263d0c069126677f0964807c9c4b49ad0da35dbaf3aa2515973410632e1a6d381876d84f2ffc73853cfe6ff76a633423d57cc6d54390df4c8976dac78611c60c2e05b256298aee7faff07c90e85ed0193b7687898b3f7af37154de569f1633318de849976a864ca06f90a624dd84a8bbf9f0843d30ee83fd2bfaa89cf2208fcd81ea5e31210871d5709b197ad36b1aae28feaba1b258b734624a1d67c81bf5438db07291c7f26d6ecd860dc66d11354ee99cce5befafc050cf9d7f814217476e1c1e8615a4bdb8354caa1e5fe00d7bed69cd8660c80ebea9b6fe5c5ffb0907cea78e8e2279c7b89caa219156f50122060a42ad16b677ba57cec14b8f3619a5fe444f24f1595e4eb6a95552c2969270c5a64623cc82fd3a195f53f3415f10a045327069d2a02ab15d34e7317242c1960a3c5d86d99337ce394cab9dabdf23be72536fdaca85969da5acb26ed414217a517420d118f44f6f44eefcd51ce71655188341f0ef0199d65ac91b846914680085987f88e3c2f4aff8d673cd031628fd5c13acd4f912ecea57a52bb2fdbb15ef3e7a6b6a89ede6615706ad13cb2628b5666a8b6047623dedfe49f4ed54941f87e2fbf69f2f0cc635db5c528ce3a72e0cddbc5712d79b59cb3b41ebbcdd494997477ab161763e46601d95844837ef303126892f664d8d505964d14315ec426db4c64531d350750df62dbbc41a1bd900874a5ad262eecc6b565e0b08507476a6b2c6040c0c62bd59acfe3e3e125672127b2a745a1b74968c3edc18982b9bef082fb517183c9c6841c2b8ef2ca1df043037afd9a9b93f603a09cc1e153d172403ef0cd0ebfbb559a83e1181c0a1c5f3237f29721ad29da15bb3aa76a7d655287777d6ea36abb75ae2d073716f11d5672aecd48089890ea0798eb952c66824d38e9426ad3085b68b00a93c17897c28771216bdb2f0d961bb8a7a23331d215078d8a9ce405ce559f441f2e71477ff3ddb000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000021de73adff50659d5ca2265798725f3fdb3d9775fa7e62308085dd748154d89541761f07f3303ba6a263ca04449e767e8003832d988d762f77b024446a75a1d75"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 115
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5",
+              "key": "ledger_key_contract_instance",
+              "durability": "persistent",
+              "val": {
+                "contract_instance": {
+                  "executable": {
+                    "wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  "storage": [
+                    {
+                      "key": {
+                        "symbol": "COMMITS"
+                      },
+                      "val": {
+                        "map": []
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "MCFGS"
+                      },
+                      "val": {
+                        "map": [
+                          {
+                            "key": {
+                              "bytes": "00000000000000000000000000000000000000000000000000000000000000a1"
+                            },
+                            "val": {
+                              "map": [
+                                {
+                                  "key": {
+                                    "symbol": "category"
+                                  },
+                                  "val": {
+                                    "string": "macro"
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "condition_1"
+                                  },
+                                  "val": {
+                                    "map": [
+                                      {
+                                        "key": {
+                                          "symbol": "asset_symbol"
+                                        },
+                                        "val": {
+                                          "symbol": "BTC"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "greater_or_equal"
+                                        },
+                                        "val": {
+                                          "bool": true
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "oracle_contract"
+                                        },
+                                        "val": {
+                                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "threshold"
+                                        },
+                                        "val": {
+                                          "i128": "100"
+                                        }
+                                      }
+                                    ]
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "condition_2"
+                                  },
+                                  "val": {
+                                    "map": [
+                                      {
+                                        "key": {
+                                          "symbol": "asset_symbol"
+                                        },
+                                        "val": {
+                                          "symbol": "BTC"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "greater_or_equal"
+                                        },
+                                        "val": {
+                                          "bool": true
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "oracle_contract"
+                                        },
+                                        "val": {
+                                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "threshold"
+                                        },
+                                        "val": {
+                                          "i128": "100"
+                                        }
+                                      }
+                                    ]
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "condition_3"
+                                  },
+                                  "val": {
+                                    "map": [
+                                      {
+                                        "key": {
+                                          "symbol": "asset_symbol"
+                                        },
+                                        "val": {
+                                          "symbol": "BTC"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "greater_or_equal"
+                                        },
+                                        "val": {
+                                          "bool": true
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "oracle_contract"
+                                        },
+                                        "val": {
+                                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "threshold"
+                                        },
+                                        "val": {
+                                          "i128": "100"
+                                        }
+                                      }
+                                    ]
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "condition_4"
+                                  },
+                                  "val": {
+                                    "map": [
+                                      {
+                                        "key": {
+                                          "symbol": "asset_symbol"
+                                        },
+                                        "val": {
+                                          "symbol": "BTC"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "greater_or_equal"
+                                        },
+                                        "val": {
+                                          "bool": true
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "oracle_contract"
+                                        },
+                                        "val": {
+                                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "threshold"
+                                        },
+                                        "val": {
+                                          "i128": "100"
+                                        }
+                                      }
+                                    ]
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "condition_5"
+                                  },
+                                  "val": {
+                                    "map": [
+                                      {
+                                        "key": {
+                                          "symbol": "asset_symbol"
+                                        },
+                                        "val": {
+                                          "symbol": "BTC"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "greater_or_equal"
+                                        },
+                                        "val": {
+                                          "bool": true
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "oracle_contract"
+                                        },
+                                        "val": {
+                                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "threshold"
+                                        },
+                                        "val": {
+                                          "i128": "100"
+                                        }
+                                      }
+                                    ]
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "condition_count"
+                                  },
+                                  "val": {
+                                    "u32": 1
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "creator"
+                                  },
+                                  "val": {
+                                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "end_timestamp"
+                                  },
+                                  "val": {
+                                    "u64": "1720000300"
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "fee_bps"
+                                  },
+                                  "val": {
+                                    "u32": 0
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "max_bet"
+                                  },
+                                  "val": {
+                                    "i128": "20000000"
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "min_bet"
+                                  },
+                                  "val": {
+                                    "i128": "10000000"
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "operator_1_is_and"
+                                  },
+                                  "val": {
+                                    "bool": true
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "operator_2_is_and"
+                                  },
+                                  "val": {
+                                    "bool": true
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "operator_3_is_and"
+                                  },
+                                  "val": {
+                                    "bool": true
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "operator_4_is_and"
+                                  },
+                                  "val": {
+                                    "bool": true
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "question"
+                                  },
+                                  "val": {
+                                    "string": "Will BTC be >= 100?"
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "MIDS"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "bytes": "00000000000000000000000000000000000000000000000000000000000000a1"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "MSTTS"
+                      },
+                      "val": {
+                        "map": [
+                          {
+                            "key": {
+                              "bytes": "00000000000000000000000000000000000000000000000000000000000000a1"
+                            },
+                            "val": {
+                              "map": [
+                                {
+                                  "key": {
+                                    "symbol": "claims_finalized"
+                                  },
+                                  "val": {
+                                    "bool": false
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "commitment_count"
+                                  },
+                                  "val": {
+                                    "u32": 0
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "distributable_pot"
+                                  },
+                                  "val": {
+                                    "i128": "0"
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "outcome"
+                                  },
+                                  "val": {
+                                    "bool": false
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "outcome_price"
+                                  },
+                                  "val": {
+                                    "i128": "0"
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "resolved"
+                                  },
+                                  "val": {
+                                    "bool": false
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "resolved_condition_1"
+                                  },
+                                  "val": {
+                                    "map": [
+                                      {
+                                        "key": {
+                                          "symbol": "asset_symbol"
+                                        },
+                                        "val": {
+                                          "symbol": "NA"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "greater_or_equal"
+                                        },
+                                        "val": {
+                                          "bool": true
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "observed_price"
+                                        },
+                                        "val": {
+                                          "i128": "0"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "observed_timestamp"
+                                        },
+                                        "val": {
+                                          "u64": "0"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "oracle_contract"
+                                        },
+                                        "val": {
+                                          "address": "CCYOZJCOPG34LLQQ7N24YXBM7LL62R7ONMZ3G6WZAAYPB5OYKOMJRN63"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "satisfied"
+                                        },
+                                        "val": {
+                                          "bool": false
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "threshold"
+                                        },
+                                        "val": {
+                                          "i128": "0"
+                                        }
+                                      }
+                                    ]
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "resolved_condition_2"
+                                  },
+                                  "val": {
+                                    "map": [
+                                      {
+                                        "key": {
+                                          "symbol": "asset_symbol"
+                                        },
+                                        "val": {
+                                          "symbol": "NA"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "greater_or_equal"
+                                        },
+                                        "val": {
+                                          "bool": true
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "observed_price"
+                                        },
+                                        "val": {
+                                          "i128": "0"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "observed_timestamp"
+                                        },
+                                        "val": {
+                                          "u64": "0"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "oracle_contract"
+                                        },
+                                        "val": {
+                                          "address": "CCYOZJCOPG34LLQQ7N24YXBM7LL62R7ONMZ3G6WZAAYPB5OYKOMJRN63"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "satisfied"
+                                        },
+                                        "val": {
+                                          "bool": false
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "threshold"
+                                        },
+                                        "val": {
+                                          "i128": "0"
+                                        }
+                                      }
+                                    ]
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "resolved_condition_3"
+                                  },
+                                  "val": {
+                                    "map": [
+                                      {
+                                        "key": {
+                                          "symbol": "asset_symbol"
+                                        },
+                                        "val": {
+                                          "symbol": "NA"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "greater_or_equal"
+                                        },
+                                        "val": {
+                                          "bool": true
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "observed_price"
+                                        },
+                                        "val": {
+                                          "i128": "0"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "observed_timestamp"
+                                        },
+                                        "val": {
+                                          "u64": "0"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "oracle_contract"
+                                        },
+                                        "val": {
+                                          "address": "CCYOZJCOPG34LLQQ7N24YXBM7LL62R7ONMZ3G6WZAAYPB5OYKOMJRN63"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "satisfied"
+                                        },
+                                        "val": {
+                                          "bool": false
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "threshold"
+                                        },
+                                        "val": {
+                                          "i128": "0"
+                                        }
+                                      }
+                                    ]
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "resolved_condition_4"
+                                  },
+                                  "val": {
+                                    "map": [
+                                      {
+                                        "key": {
+                                          "symbol": "asset_symbol"
+                                        },
+                                        "val": {
+                                          "symbol": "NA"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "greater_or_equal"
+                                        },
+                                        "val": {
+                                          "bool": true
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "observed_price"
+                                        },
+                                        "val": {
+                                          "i128": "0"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "observed_timestamp"
+                                        },
+                                        "val": {
+                                          "u64": "0"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "oracle_contract"
+                                        },
+                                        "val": {
+                                          "address": "CCYOZJCOPG34LLQQ7N24YXBM7LL62R7ONMZ3G6WZAAYPB5OYKOMJRN63"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "satisfied"
+                                        },
+                                        "val": {
+                                          "bool": false
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "threshold"
+                                        },
+                                        "val": {
+                                          "i128": "0"
+                                        }
+                                      }
+                                    ]
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "resolved_condition_5"
+                                  },
+                                  "val": {
+                                    "map": [
+                                      {
+                                        "key": {
+                                          "symbol": "asset_symbol"
+                                        },
+                                        "val": {
+                                          "symbol": "NA"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "greater_or_equal"
+                                        },
+                                        "val": {
+                                          "bool": true
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "observed_price"
+                                        },
+                                        "val": {
+                                          "i128": "0"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "observed_timestamp"
+                                        },
+                                        "val": {
+                                          "u64": "0"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "oracle_contract"
+                                        },
+                                        "val": {
+                                          "address": "CCYOZJCOPG34LLQQ7N24YXBM7LL62R7ONMZ3G6WZAAYPB5OYKOMJRN63"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "satisfied"
+                                        },
+                                        "val": {
+                                          "bool": false
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "threshold"
+                                        },
+                                        "val": {
+                                          "i128": "0"
+                                        }
+                                      }
+                                    ]
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "resolved_condition_count"
+                                  },
+                                  "val": {
+                                    "u32": 0
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "settled_at"
+                                  },
+                                  "val": {
+                                    "u64": "0"
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "total_claimed_out"
+                                  },
+                                  "val": {
+                                    "i128": "0"
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "total_locked_collateral"
+                                  },
+                                  "val": {
+                                    "i128": "0"
+                                  }
+                                },
+                                {
+                                  "key": {
+                                    "symbol": "winning_side_total"
+                                  },
+                                  "val": {
+                                    "i128": "0"
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "NULLS"
+                      },
+                      "val": {
+                        "map": []
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "SYSTEM"
+                      },
+                      "val": {
+                        "map": [
+                          {
+                            "key": {
+                              "symbol": "admin"
+                            },
+                            "val": {
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "claim_verifier"
+                            },
+                            "val": {
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "commit_verifier"
+                            },
+                            "val": {
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "reflector_contract"
+                            },
+                            "val": {
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "usdc_token"
+                            },
+                            "val": {
+                              "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 115
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "Balance"
+                  },
+                  {
+                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "map": [
+                  {
+                    "key": {
+                      "symbol": "amount"
+                    },
+                    "val": {
+                      "i128": "50000000"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "authorized"
+                    },
+                    "val": {
+                      "bool": true
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "clawback"
+                    },
+                    "val": {
+                      "bool": false
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 1099
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN",
+              "key": "ledger_key_contract_instance",
+              "durability": "persistent",
+              "val": {
+                "contract_instance": {
+                  "executable": "stellar_asset",
+                  "storage": [
+                    {
+                      "key": {
+                        "symbol": "METADATA"
+                      },
+                      "val": {
+                        "map": [
+                          {
+                            "key": {
+                              "symbol": "decimal"
+                            },
+                            "val": {
+                              "u32": 7
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "name"
+                            },
+                            "val": {
+                              "string": "aaa:GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJXFF"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "symbol"
+                            },
+                            "val": {
+                              "string": "aaa"
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "Admin"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "AssetInfo"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "AlphaNum4"
+                          },
+                          {
+                            "map": [
+                              {
+                                "key": {
+                                  "symbol": "asset_code"
+                                },
+                                "val": {
+                                  "string": "aaa\\0"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "issuer"
+                                },
+                                "val": {
+                                  "bytes": "0000000000000000000000000000000000000000000000000000000000000004"
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 1099
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_code": {
+              "ext": "v0",
+              "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "code": ""
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 115
+      }
+    ]
+  },
+  "events": []
+}

@@ -1,4 +1,4 @@
-import { BarretenbergSync, UltraHonkBackend } from '@aztec/bb.js';
+import { BarretenbergSync, Fr, UltraHonkBackend } from '@aztec/bb.js';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -13,6 +13,13 @@ let initPromise;
 export async function initBarretenberg() {
   initPromise ??= BarretenbergSync.initSingleton(barretenbergWasmPath);
   await initPromise;
+}
+
+export async function poseidon2PermutationFields(inputs) {
+  await initBarretenberg();
+  return BarretenbergSync.getSingleton()
+    .poseidon2Permutation(inputs.map((input) => new Fr(BigInt(input))))
+    .map((field) => BigInt(field.toString()));
 }
 
 export function createUltraHonkBackend(bytecode) {

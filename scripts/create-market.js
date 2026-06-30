@@ -12,8 +12,44 @@ import {
   xdr,
   scValToNative,
 } from '@stellar/stellar-sdk';
+import { loadEnv } from './env.js';
 
-dotenv.config();
+loadEnv({
+  preserve: [
+    'END_TIMESTAMP',
+    'MARKET_CONDITION_COUNT',
+    'MIN_BET',
+    'MAX_BET',
+    'MARKET_QUESTION',
+    'MARKET_CATEGORY',
+    'WRITE_MARKET_ID',
+    'COND1_ASSET',
+    'COND1_COMPARATOR',
+    'COND1_THRESHOLD',
+    'COND1_JOIN',
+    'COND1_ORACLE',
+    'COND2_ASSET',
+    'COND2_COMPARATOR',
+    'COND2_THRESHOLD',
+    'COND2_JOIN',
+    'COND2_ORACLE',
+    'COND3_ASSET',
+    'COND3_COMPARATOR',
+    'COND3_THRESHOLD',
+    'COND3_JOIN',
+    'COND3_ORACLE',
+    'COND4_ASSET',
+    'COND4_COMPARATOR',
+    'COND4_THRESHOLD',
+    'COND4_JOIN',
+    'COND4_ORACLE',
+    'COND5_ASSET',
+    'COND5_COMPARATOR',
+    'COND5_THRESHOLD',
+    'COND5_JOIN',
+    'COND5_ORACLE',
+  ],
+});
 
 const EXTERNAL_REFLECTOR_TESTNET = 'CCYOZJCOPG34LLQQ7N24YXBM7LL62R7ONMZ3G6WZAAYPB5OYKOMJRN63';
 const FIAT_REFLECTOR_TESTNET = 'CCSSOHTBL3LEWUCBBEB5NJFC2OKFRC74OWEIJIZLRJBGAAU4VMU5NV4W';
@@ -40,64 +76,103 @@ function buildCondition(index) {
   const comparator = (process.env[`COND${index}_COMPARATOR`] || (index === 1 ? 'lte' : 'gte')).toLowerCase();
   const threshold =
     process.env[`COND${index}_THRESHOLD`] || (index === 1 ? '500000000000' : '20000000000');
-  return {
-    oracle_contract: Address.fromString(process.env[`COND${index}_ORACLE`] || oracleContractForAsset(asset)),
-    asset_symbol: asset,
-    greater_or_equal: comparator !== 'lte',
-    threshold: BigInt(threshold),
-  };
-}
-
-function scValSymbol(value) {
-  return xdr.ScVal.scvSymbol(value);
-}
-
-function scValBool(value) {
-  return xdr.ScVal.scvBool(value);
-}
-
-function scValMapEntry(key, val) {
-  return new xdr.ScMapEntry({
-    key: scValSymbol(key),
-    val,
-  });
-}
-
-function scValMap(entries) {
-  return xdr.ScVal.scvMap(
-    entries
-      .slice()
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, val]) => scValMapEntry(key, val)),
-  );
-}
-
-function oracleConditionScVal(condition) {
-  return scValMap([
-    ['oracle_contract', condition.oracle_contract.toScVal()],
-    ['asset_symbol', scValSymbol(condition.asset_symbol)],
-    ['greater_or_equal', scValBool(condition.greater_or_equal)],
-    ['threshold', nativeToScVal(condition.threshold, { type: 'i128' })],
+  return xdr.ScVal.scvMap([
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol('asset_symbol'),
+      val: xdr.ScVal.scvSymbol(asset),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol('greater_or_equal'),
+      val: xdr.ScVal.scvBool(comparator !== 'lte'),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol('oracle_contract'),
+      val: Address.fromString(process.env[`COND${index}_ORACLE`] || oracleContractForAsset(asset)).toScVal(),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol('threshold'),
+      val: xdr.ScVal.scvI128(
+        new xdr.Int128Parts({
+          hi: 0n,
+          lo: BigInt(threshold),
+        }),
+      ),
+    }),
   ]);
 }
 
 function oracleConditionsInputScVal(conditionCount, conditions, operators) {
-  return scValMap([
-    ['condition_count', nativeToScVal(conditionCount, { type: 'u32' })],
-    ['condition_1', oracleConditionScVal(conditions[0])],
-    ['condition_2', oracleConditionScVal(conditions[1])],
-    ['condition_3', oracleConditionScVal(conditions[2])],
-    ['condition_4', oracleConditionScVal(conditions[3])],
-    ['condition_5', oracleConditionScVal(conditions[4])],
-    ['operator_1_is_and', scValBool(operators[0])],
-    ['operator_2_is_and', scValBool(operators[1])],
-    ['operator_3_is_and', scValBool(operators[2])],
-    ['operator_4_is_and', scValBool(operators[3])],
+  return xdr.ScVal.scvMap([
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol('condition_1'),
+      val: conditions[0],
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol('condition_2'),
+      val: conditions[1],
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol('condition_3'),
+      val: conditions[2],
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol('condition_4'),
+      val: conditions[3],
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol('condition_5'),
+      val: conditions[4],
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol('condition_count'),
+      val: xdr.ScVal.scvU32(conditionCount),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol('operator_1_is_and'),
+      val: xdr.ScVal.scvBool(operators[0]),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol('operator_2_is_and'),
+      val: xdr.ScVal.scvBool(operators[1]),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol('operator_3_is_and'),
+      val: xdr.ScVal.scvBool(operators[2]),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol('operator_4_is_and'),
+      val: xdr.ScVal.scvBool(operators[3]),
+    }),
   ]);
 }
 
 async function submit(method, args) {
-  const account = await server.getAccount(creator);
+  let account;
+  let lastError;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      account = await server.getAccount(creator);
+      break;
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.includes('Account not found')) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  }
+  if (!account) {
+    const message = lastError instanceof Error ? lastError.message : String(lastError);
+    const friendbotUrl = new URL('https://friendbot.stellar.org/');
+    friendbotUrl.searchParams.set('addr', creator);
+    const response = await fetch(friendbotUrl);
+    if (!response.ok) {
+      throw new Error(`friendbot funding failed after repeated lookup failures: ${message}; ${response.status} ${await response.text()}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    account = await server.getAccount(creator);
+  }
   const tx = new TransactionBuilder(account, {
     fee: BASE_FEE,
     networkPassphrase: process.env.STELLAR_NETWORK,
@@ -151,6 +226,7 @@ async function createMarket() {
       process.env.MARKET_QUESTION || 'Will BTC stay below $50,000 and ETH stay above $2,000 at resolution?',
       { type: 'string' },
     ),
+    nativeToScVal(process.env.MARKET_CATEGORY || 'macro', { type: 'string' }),
     oracleConditionsInputScVal(conditionCount, conditions, operators),
     nativeToScVal(
       BigInt(

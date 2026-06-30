@@ -1,0 +1,29 @@
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_DATABASE: verdict
+    volumes:
+      - verdict-mongo-data:/data/db
+
+  profile-backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    depends_on:
+      - mongo
+    ports:
+      - "4001:4001"
+    environment:
+      PORT: 4001
+      MONGODB_URI: mongodb://mongo:27017/verdict
+      CORS_ORIGIN: http://localhost:3001
+      STELLAR_RPC: ${STELLAR_RPC}
+      STELLAR_NETWORK: ${STELLAR_NETWORK}
+      MARKET_CONTRACT_ID: ${MARKET_CONTRACT_ID}
+      ADMIN_SECRET_KEY: ${ADMIN_SECRET_KEY}
+      MARKET_RESOLUTION_POLL_MS: ${MARKET_RESOLUTION_POLL_MS:-60000}
+
+volumes:
+  verdict-mongo-data:

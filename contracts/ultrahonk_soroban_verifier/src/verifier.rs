@@ -17,7 +17,7 @@ use crate::{
     types::PAIRING_POINTS_SIZE,
     utils::{load_proof, load_vk_from_bytes},
 };
-use soroban_sdk::{Bytes, Env};
+use soroban_sdk::{symbol_short, Bytes, Env};
 
 /// Error type describing why a verification key could not be loaded from bytes.
 ///
@@ -81,7 +81,9 @@ impl UltraHonkVerifier {
         public_inputs_bytes: &Bytes,
     ) -> Result<(), VerifyError> {
         // 1) parse proof
+        env.events().publish((symbol_short!("vh_stage"),), 10u32);
         let proof = load_proof(env, proof_bytes).map_err(|_| VerifyError::InvalidInput)?;
+        env.events().publish((symbol_short!("vh_stage"),), 11u32);
 
         // 2) sanity on public inputs (length and VK metadata if present)
         if !public_inputs_bytes.len().is_multiple_of(32) {
@@ -98,6 +100,7 @@ impl UltraHonkVerifier {
         }
 
         // 3) Fiat–Shamir transcript
+        env.events().publish((symbol_short!("vh_stage"),), 20u32);
         let pis_total = provided + PAIRING_POINTS_SIZE as u64;
         let pub_inputs_offset = self.vk.pub_inputs_offset;
         let mut t = generate_transcript(
@@ -109,8 +112,10 @@ impl UltraHonkVerifier {
             pub_inputs_offset,
         )
         .map_err(|_| VerifyError::InvalidInput)?;
+        env.events().publish((symbol_short!("vh_stage"),), 21u32);
 
         // 4) Public delta
+        env.events().publish((symbol_short!("vh_stage"),), 30u32);
         t.rel_params.public_inputs_delta = Self::compute_public_input_delta(
             env,
             public_inputs_bytes,
@@ -121,13 +126,18 @@ impl UltraHonkVerifier {
             self.vk.circuit_size,
         )
         .map_err(|_| VerifyError::InvalidInput)?;
+        env.events().publish((symbol_short!("vh_stage"),), 31u32);
 
         // 5) Sum-check
+        env.events().publish((symbol_short!("vh_stage"),), 40u32);
         verify_sumcheck(env, &proof, &t, &self.vk).map_err(|_| VerifyError::SumcheckFailed)?;
+        env.events().publish((symbol_short!("vh_stage"),), 41u32);
 
         // 6) Shplonk
+        env.events().publish((symbol_short!("vh_stage"),), 50u32);
         verify_shplemini(&self.env, &proof, &self.vk, &t)
             .map_err(|_| VerifyError::ShplonkFailed)?;
+        env.events().publish((symbol_short!("vh_stage"),), 51u32);
 
         Ok(())
     }

@@ -1,26 +1,27 @@
 # BlindMarket
 
-Private prediction market backend on Stellar with Noir commitments and Soroban settlement.
+Private prediction market backend on Stellar with Noir commitments, Soroban settlement, and portable offchain reputation proofs.
 
-BlindMarket hides individual positions and pool splits while a market is open. Users commit to a side and amount with a Poseidon2 commitment, then reveal only after resolution to register winning claims and collect proportional payouts.
+BlindMarket hides individual positions and pool splits while a market is open. Users commit to a side and collateral amount with a market-bound Poseidon2 commitment, markets resolve to a winner plus winner-side aggregate only, and winners claim proportional payouts with nullifier-protected proofs. Settled claimed history can also be converted into portable category/window reputation credentials such as percentile-band claims.
 
 ## Status
 
 This repository is a hackathon baseline scaffold.
 
-- Noir circuits are included for commit and claim proofs.
-- Soroban contract implements market lifecycle, commitment storage, resolution, two-phase claim registration, and payout collection.
-- On-chain UltraHonk verification is stubbed for demo flow.
-- Reflector BTC/USD oracle integration is stubbed with a mock price.
+- Noir circuits are included for commit, claim, and reputation proofs.
+- Soroban contract implements private market lifecycle, commitment storage, nullifier checks, winner-side aggregate finalization, and claim-based payouts.
+- Frontend stores salts and commitment metadata locally for backup/recovery.
+- Portable reputation claims are verified offchain from claimed settled history snapshots.
 
-Before production, replace the proof and oracle stubs in `contracts/blind_market/src/lib.rs`.
+Before production, audit the finalization trust assumptions around `winning_side_total`, deploy the verifier contracts with the matching VKs, and harden the snapshot witness pipeline used for reputation proofs.
 
 ## Layout
 
 ```text
 circuits/
-  commit/   Noir circuit for hidden bet commitments
-  claim/    Noir circuit for claim/nullifier/payout checks
+  commit/      Noir circuit for hidden market-bound commitments
+  claim/       Noir circuit for claim/nullifier/payout checks
+  reputation/  Noir circuit for threshold and percentile-band credentials
 contracts/
   blind_market/ Soroban contract
 scripts/
@@ -44,7 +45,7 @@ chmod +x scripts/generate-verifier.sh
 ./scripts/generate-verifier.sh
 ```
 
-The script writes `verifier/commit_vk.bin` and `verifier/claim_vk.bin`. With the currently installed `bb 3.0.0-nightly.20251104`, Solidity verifier generation may warn with `Assertion failed: (val.on_curve())`; this does not block VK generation. The Soroban contract currently stubs on-chain proof verification, so production work should replace that stub with a real UltraHonk verifier path.
+The script writes verifier material for the market circuits. The frontend circuit artifacts are expected at `frontend/public/circuits/{commit,claim,reputation}.json`.
 
 ## Build Contract
 

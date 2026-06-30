@@ -1,45 +1,39 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import type { AppConfig, WalletConfig } from "@/lib/server-config";
+import { useEffect, useState } from "react";
+import type { AppConfig } from "@/lib/server-config";
+import { generateClaimProof, generateCommitProof, generateReputationProof, verifyReputationProof } from "@/lib/proofs";
+import { buildSnapshot, createClaimDescriptor } from "@/lib/reputation";
 import {
   type MarketView,
   type OracleCondition,
-  type Position,
-  buyShares,
-  bytesToHex,
-  collectPositionPayout,
-  estimateSharesForBudget,
+  claimWinnings,
+  commitPosition,
   createMarket,
   loadMarkets,
-  loadPosition,
   loadSystemConfig,
   loadUsdcBalance,
-  resolveMarket,
-  sellShares,
   setBrowserConfig,
+  walletByLabel,
+  walletPublicKey,
 } from "@/lib/stellar";
 
 type Props = {
   config: AppConfig;
 };
 
-type MarketRow = {
+type LocalPosition = {
   marketId: string;
-  view: MarketView;
-  position: Position;
-};
-
-type PricePoint = {
-  at: number;
-  yesBps: number;
-  noBps: number;
-};
-
-type OracleAssetOption = {
-  symbol: string;
-  oracleContract: string;
-  group: string;
+  marketQuestion: string;
+  category: string;
+  owner: string;
+  side: "YES" | "NO";
+  amountInStroops: string;
+  salt: string;
+  commitment: string;
+  nullifier: string;
+  claimTxHash?: string;
+  claimedAt?: number;
 };
 
 type DraftCondition = {
@@ -50,60 +44,28 @@ type DraftCondition = {
   joinWithNext: "AND" | "OR";
 };
 
+const STORAGE_KEY = "blind-market-private-positions-v2";
 const EXTERNAL_REFLECTOR_TESTNET = "CCYOZJCOPG34LLQQ7N24YXBM7LL62R7ONMZ3G6WZAAYPB5OYKOMJRN63";
 const FIAT_REFLECTOR_TESTNET = "CCSSOHTBL3LEWUCBBEB5NJFC2OKFRC74OWEIJIZLRJBGAAU4VMU5NV4W";
+const CATEGORY_OPTIONS = ["macro", "crypto", "eth-related", "fx", "commodities"];
 
-const ORACLE_ASSET_OPTIONS: OracleAssetOption[] = [
-  { symbol: "BTC", oracleContract: EXTERNAL_REFLECTOR_TESTNET, group: "Crypto" },
-  { symbol: "ETH", oracleContract: EXTERNAL_REFLECTOR_TESTNET, group: "Crypto" },
-  { symbol: "USDT", oracleContract: EXTERNAL_REFLECTOR_TESTNET, group: "Stable" },
-  { symbol: "XRP", oracleContract: EXTERNAL_REFLECTOR_TESTNET, group: "Crypto" },
-  { symbol: "SOL", oracleContract: EXTERNAL_REFLECTOR_TESTNET, group: "Crypto" },
-  { symbol: "USDC", oracleContract: EXTERNAL_REFLECTOR_TESTNET, group: "Stable" },
-  { symbol: "ADA", oracleContract: EXTERNAL_REFLECTOR_TESTNET, group: "Crypto" },
-  { symbol: "AVAX", oracleContract: EXTERNAL_REFLECTOR_TESTNET, group: "Crypto" },
-  { symbol: "DOT", oracleContract: EXTERNAL_REFLECTOR_TESTNET, group: "Crypto" },
-  { symbol: "MATIC", oracleContract: EXTERNAL_REFLECTOR_TESTNET, group: "Crypto" },
-  { symbol: "LINK", oracleContract: EXTERNAL_REFLECTOR_TESTNET, group: "Crypto" },
-  { symbol: "DAI", oracleContract: EXTERNAL_REFLECTOR_TESTNET, group: "Stable" },
-  { symbol: "ATOM", oracleContract: EXTERNAL_REFLECTOR_TESTNET, group: "Crypto" },
-  { symbol: "XLM", oracleContract: EXTERNAL_REFLECTOR_TESTNET, group: "Crypto" },
-  { symbol: "UNI", oracleContract: EXTERNAL_REFLECTOR_TESTNET, group: "Crypto" },
-  { symbol: "EURC", oracleContract: EXTERNAL_REFLECTOR_TESTNET, group: "Stable" },
-  { symbol: "EUR", oracleContract: FIAT_REFLECTOR_TESTNET, group: "FX" },
-  { symbol: "GBP", oracleContract: FIAT_REFLECTOR_TESTNET, group: "FX" },
-  { symbol: "CHF", oracleContract: FIAT_REFLECTOR_TESTNET, group: "FX" },
-  { symbol: "CAD", oracleContract: FIAT_REFLECTOR_TESTNET, group: "FX" },
-  { symbol: "MXN", oracleContract: FIAT_REFLECTOR_TESTNET, group: "FX" },
-  { symbol: "ARS", oracleContract: FIAT_REFLECTOR_TESTNET, group: "FX" },
-  { symbol: "BRL", oracleContract: FIAT_REFLECTOR_TESTNET, group: "FX" },
-  { symbol: "THB", oracleContract: FIAT_REFLECTOR_TESTNET, group: "FX" },
-  { symbol: "XAU", oracleContract: FIAT_REFLECTOR_TESTNET, group: "Commodity" },
+const ORACLE_ASSET_OPTIONS = [
+  { symbol: "BTC", oracleContract: EXTERNAL_REFLECTOR_TESTNET },
+  { symbol: "ETH", oracleContract: EXTERNAL_REFLECTOR_TESTNET },
+  { symbol: "SOL", oracleContract: EXTERNAL_REFLECTOR_TESTNET },
+  { symbol: "XAU", oracleContract: FIAT_REFLECTOR_TESTNET },
+  { symbol: "EUR", oracleContract: FIAT_REFLECTOR_TESTNET },
 ];
 
 function toUsdc(stroops: bigint) {
   return Number(stroops) / 10_000_000;
 }
 
-function formatShort(value: string) {
-  return `${value.slice(0, 8)}…${value.slice(-8)}`;
-}
-
-function formatPriceBps(bps: bigint) {
-  return `${(Number(bps) / 100).toFixed(2)}%`;
-}
-
-function formatRelativeTime(timestamp: number) {
-  const ageSeconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
-  if (ageSeconds < 60) {
-    return `${ageSeconds}s ago`;
-  }
-  const minutes = Math.floor(ageSeconds / 60);
-  if (minutes < 60) {
-    return `${minutes}m ago`;
-  }
-  const hours = Math.floor(minutes / 60);
-  return `${hours}h ago`;
+function randomMarketId() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  bytes[0] = 0;
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function defaultDraftCondition(): DraftCondition {
@@ -116,8 +78,23 @@ function defaultDraftCondition(): DraftCondition {
   };
 }
 
-function conditionFromAsset(symbol: string) {
-  return ORACLE_ASSET_OPTIONS.find((option) => option.symbol === symbol) ?? ORACLE_ASSET_OPTIONS[0];
+function loadSavedPositions() {
+  if (typeof window === "undefined") {
+    return [] as LocalPosition[];
+  }
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) {
+      return [];
+    }
+    return JSON.parse(raw) as LocalPosition[];
+  } catch {
+    return [];
+  }
+}
+
+function savePositions(positions: LocalPosition[]) {
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(positions, null, 2));
 }
 
 function draftToOracleCondition(condition: DraftCondition): OracleCondition {
@@ -129,206 +106,104 @@ function draftToOracleCondition(condition: DraftCondition): OracleCondition {
   };
 }
 
-function formatComparator(greaterOrEqual: boolean) {
-  return greaterOrEqual ? ">=" : "<=";
-}
-
-function describeCondition(condition: OracleCondition) {
-  return `${condition.asset_symbol} ${formatComparator(condition.greater_or_equal)} ${condition.threshold.toString()}`;
-}
-
-function describeMarketLogic(view: MarketView) {
-  if (view.config.oracle_conditions.length === 0) {
-    return "No oracle conditions";
+function formatTimestamp(timestamp: bigint) {
+  if (timestamp === 0n) {
+    return "not settled";
   }
-  return view.config.oracle_conditions
-    .map((condition, index) => {
-      const connector = index < view.config.condition_operators.length
-        ? view.config.condition_operators[index] ? " AND " : " OR "
-        : "";
-      return `${describeCondition(condition)}${connector}`;
-    })
-    .join("");
-}
-
-function randomMarketId() {
-  const bytes = new Uint8Array(32);
-  crypto.getRandomValues(bytes);
-  return bytesToHex(bytes);
-}
-
-function walletFromConfig(config: AppConfig, label: string) {
-  return config.wallets.find((wallet) => wallet.label === label) ?? config.wallets[0];
-}
-
-async function loadMarketRows(walletLabel: string, config: AppConfig): Promise<MarketRow[]> {
-  const wallet = walletFromConfig(config, walletLabel);
-  const views = await loadMarkets(walletLabel);
-  const positions = await Promise.all(
-    views.map(async ({ marketId }) => loadPosition(marketId, wallet.publicKey, walletLabel)),
-  );
-  return views.map((entry, index) => ({
-    ...entry,
-    position: positions[index],
-  }));
+  return new Date(Number(timestamp) * 1000).toLocaleString();
 }
 
 export function MarketDashboard({ config }: Props) {
   const [walletLabel, setWalletLabel] = useState(config.wallets[0].label);
-  const [markets, setMarkets] = useState<MarketRow[]>([]);
-  const [priceHistory, setPriceHistory] = useState<Record<string, PricePoint[]>>({});
-  const [system, setSystem] = useState<Awaited<ReturnType<typeof loadSystemConfig>> | null>(null);
-  const [usdcBalance, setUsdcBalance] = useState<bigint>(BigInt(0));
-  const [selectedMarketId, setSelectedMarketId] = useState("");
-  const [buyAmountUsdc, setBuyAmountUsdc] = useState("1");
-  const [sellSharesAmount, setSellSharesAmount] = useState("1");
-  const [question, setQuestion] = useState("Will BTC stay below $50,000 and ETH stay above $2,000 at resolution?");
-  const [draftConditions, setDraftConditions] = useState<DraftCondition[]>([
-    { ...defaultDraftCondition(), comparator: "lte" },
-    {
-      assetSymbol: "ETH",
-      oracleContract: EXTERNAL_REFLECTOR_TESTNET,
-      comparator: "gte",
-      threshold: "20000000000",
-      joinWithNext: "AND",
-    },
-  ]);
-  const [endTimestamp, setEndTimestamp] = useState(() => {
-    const date = new Date();
-    date.setDate(date.getDate() + 7);
-    return Math.floor(date.getTime() / 1000).toString();
-  });
-  const [minBet, setMinBet] = useState("1000000");
-  const [maxBet, setMaxBet] = useState("1000000000");
-  const [feeBps, setFeeBps] = useState("200");
-  const [status, setStatus] = useState("Ready.");
+  const [markets, setMarkets] = useState<Array<{ marketId: string; view: MarketView }>>([]);
+  const [savedPositions, setSavedPositions] = useState<LocalPosition[]>(() => loadSavedPositions());
+  const [usdcBalance, setUsdcBalance] = useState<bigint>(0n);
+  const [status, setStatus] = useState("Privacy-safe market dashboard ready.");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
-  const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
+  const [selectedMarketId, setSelectedMarketId] = useState("");
+  const [question, setQuestion] = useState("Will BTC remain below $50,000 by expiry?");
+  const [category, setCategory] = useState("macro");
+  const [draftConditions, setDraftConditions] = useState<DraftCondition[]>([defaultDraftCondition()]);
+  const [endTimestamp, setEndTimestamp] = useState(() => Math.floor(Date.now() / 1000 + 7 * 24 * 60 * 60).toString());
+  const [minBet, setMinBet] = useState("10000000");
+  const [maxBet, setMaxBet] = useState("250000000");
+  const [feeBps, setFeeBps] = useState("200");
+  const [commitAmountUsdc, setCommitAmountUsdc] = useState("10");
+  const [resolveWinningTotal, setResolveWinningTotal] = useState("0");
+  const [backupJson, setBackupJson] = useState("");
+  const [reputationCredential, setReputationCredential] = useState("");
+  const [previewNow] = useState(() => Date.now());
 
   useEffect(() => {
     setBrowserConfig(config);
   }, [config]);
 
   useEffect(() => {
-    if (!selectedMarketId && markets[0]) {
-      setSelectedMarketId(markets[0].marketId);
-    }
-  }, [markets, selectedMarketId]);
-
-  useEffect(() => {
-    let mounted = true;
+    let cancelled = false;
     void (async () => {
       try {
-        const wallet = walletFromConfig(config, walletLabel);
-        const [sys, rows] = await Promise.all([
+        const wallet = walletByLabel(walletLabel) ?? config.wallets[0];
+        const [rows, balance] = await Promise.all([
+          loadMarkets(walletLabel),
+          loadUsdcBalance(wallet.publicKey, walletLabel),
           loadSystemConfig(),
-          loadMarketRows(walletLabel, config),
         ]);
-        const balance = await loadUsdcBalance(wallet.publicKey, walletLabel);
-        if (!mounted) {
+        if (cancelled) {
           return;
         }
-        setSystem(sys);
         setMarkets(rows);
         setUsdcBalance(balance);
-        setPriceHistory((current) => mergeHistory(current, rows));
-        setLastUpdatedAt(Date.now());
         if (!selectedMarketId && rows[0]) {
           setSelectedMarketId(rows[0].marketId);
         }
-        setStatus(`Loaded ${rows.length} market${rows.length === 1 ? "" : "s"} for ${walletLabel}.`);
       } catch (loadError) {
-        if (!mounted) {
-          return;
+        if (!cancelled) {
+          setError(loadError instanceof Error ? loadError.message : String(loadError));
         }
-        setError(loadError instanceof Error ? loadError.message : String(loadError));
       }
     })();
     return () => {
-      mounted = false;
+      cancelled = true;
     };
-  }, [config, walletLabel]);
-
-  useEffect(() => {
-    const interval = window.setInterval(() => {
-      void refreshMarkets();
-    }, 5000);
-    return () => window.clearInterval(interval);
-  }, [walletLabel, config, selectedMarketId]);
+  }, [config, walletLabel, selectedMarketId]);
 
   const selectedMarket = markets.find((market) => market.marketId === selectedMarketId) ?? null;
-  const selectedHistory = selectedMarketId ? priceHistory[selectedMarketId] ?? [] : [];
-  const liveYesPrice = selectedMarket ? formatPriceBps(selectedMarket.view.state.public_yes_quote_bps) : "--";
-  const liveNoPrice = selectedMarket ? formatPriceBps(selectedMarket.view.state.public_no_quote_bps) : "--";
-  const selectedMarketLogic = selectedMarket ? describeMarketLogic(selectedMarket.view) : "--";
-  const selectedWallet = walletFromConfig(config, walletLabel);
-  const selectedWalletTotalShares = selectedMarket
-    ? toUsdc(selectedMarket.position.yes_shares + selectedMarket.position.no_shares).toFixed(4)
-    : "0.0000";
-  const buyAmountInStroops = useMemo(() => {
-    const numeric = Number(buyAmountUsdc);
-    if (!Number.isFinite(numeric) || numeric <= 0) {
-      return BigInt(0);
-    }
-    return BigInt(Math.round(numeric * 10_000_000));
-  }, [buyAmountUsdc]);
-  const buyPreview = useMemo(() => {
-    if (!selectedMarket || buyAmountInStroops <= BigInt(0)) {
-      return null;
-    }
-    return {
-      yesShares: estimateSharesForBudget(selectedMarket.view.state, "YES", buyAmountInStroops),
-      noShares: estimateSharesForBudget(selectedMarket.view.state, "NO", buyAmountInStroops),
-    };
-  }, [selectedMarket, buyAmountInStroops]);
-  const exceedsBalance = buyAmountInStroops > usdcBalance;
-  const marketBias = useMemo(() => {
-    if (!selectedMarket) {
-      return "Balanced";
-    }
-    const yes = Number(selectedMarket.view.state.public_yes_quote_bps);
-    const no = Number(selectedMarket.view.state.public_no_quote_bps);
-    if (Math.abs(yes - no) < 40) {
-      return "Balanced";
-    }
-    return yes > no ? "Leaning YES" : "Leaning NO";
-  }, [selectedMarket]);
 
-  async function refreshMarkets(nextSelectedMarketId?: string) {
-    const wallet = walletFromConfig(config, walletLabel);
-    const rows = await loadMarketRows(walletLabel, config);
-    const balance = await loadUsdcBalance(wallet.publicKey, walletLabel);
+  const walletPublic = walletPublicKey(walletLabel);
+  const walletPositions = savedPositions.filter((position) => position.owner === walletPublic);
+  const selectedMarketPositions = walletPositions.filter((position) => position.marketId === selectedMarketId);
+
+  async function refreshMarkets() {
+    const wallet = walletByLabel(walletLabel) ?? config.wallets[0];
+    const [rows, balance] = await Promise.all([
+      loadMarkets(walletLabel),
+      loadUsdcBalance(wallet.publicKey, walletLabel),
+    ]);
     setMarkets(rows);
     setUsdcBalance(balance);
-    setPriceHistory((current) => mergeHistory(current, rows));
-    setLastUpdatedAt(Date.now());
-    if (nextSelectedMarketId) {
-      setSelectedMarketId(nextSelectedMarketId);
-    } else if (!selectedMarketId && rows[0]) {
-      setSelectedMarketId(rows[0].marketId);
-    }
   }
 
-  async function runAction(label: string, action: () => Promise<void>) {
-    setBusy(label);
-    setError("");
-    try {
-      await action();
-    } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : String(actionError));
-    } finally {
-      setBusy(null);
-    }
+  function persistPositions(next: LocalPosition[]) {
+    setSavedPositions(next);
+    savePositions(next);
+    setBackupJson(JSON.stringify(next, null, 2));
   }
 
   async function handleCreateMarket() {
-    await runAction("create", async () => {
-      const wallet = walletFromConfig(config, walletLabel);
+    const wallet = walletByLabel(walletLabel);
+    if (!wallet) {
+      return;
+    }
+
+    setBusy("create");
+    setError("");
+    try {
       const marketId = randomMarketId();
-      const result = await createMarket(wallet, {
+      await createMarket(wallet, {
         marketId,
         question,
+        category,
         oracleConditions: draftConditions.map(draftToOracleCondition),
         conditionOperators: draftConditions.slice(0, -1).map((condition) => condition.joinWithNext === "AND"),
         endTimestamp: BigInt(endTimestamp),
@@ -336,749 +211,399 @@ export function MarketDashboard({ config }: Props) {
         maxBet: BigInt(maxBet),
         feeBps: Number(feeBps),
       });
-      await refreshMarkets(marketId);
-      setStatus(`Created market ${formatShort(marketId)} at ${result.hash}.`);
-    });
+      await refreshMarkets();
+      setSelectedMarketId(marketId);
+      setStatus(`Created private ${category} market ${marketId.slice(0, 10)}…`);
+    } catch (createError) {
+      setError(createError instanceof Error ? createError.message : String(createError));
+    } finally {
+      setBusy(null);
+    }
   }
 
-  function updateDraftCondition(index: number, next: Partial<DraftCondition>) {
-    setDraftConditions((current) =>
-      current.map((condition, currentIndex) =>
-        currentIndex === index ? { ...condition, ...next } : condition,
-      ),
-    );
-  }
-
-  function addDraftCondition() {
-    setDraftConditions((current) =>
-      current.length >= 5 ? current : [...current, defaultDraftCondition()],
-    );
-  }
-
-  function removeDraftCondition(index: number) {
-    setDraftConditions((current) =>
-      current.length === 1 ? current : current.filter((_, currentIndex) => currentIndex !== index),
-    );
-  }
-
-  async function handleBuy(marketId: string, side: "YES" | "NO") {
-    if (buyAmountInStroops > usdcBalance) {
-      setError(
-        `Insufficient USDC balance. ${walletLabel} has ${toUsdc(usdcBalance).toFixed(6)} USDC available.`,
-      );
+  async function handleCommit(side: "YES" | "NO") {
+    if (!selectedMarket) {
+      return;
+    }
+    const wallet = walletByLabel(walletLabel);
+    if (!wallet) {
       return;
     }
 
-    await runAction(`buy-${side}`, async () => {
-      const wallet = walletFromConfig(config, walletLabel);
-      const result = await buyShares(wallet, {
-        marketId,
+    setBusy(`commit-${side}`);
+    setError("");
+    try {
+      const proof = await generateCommitProof({
+        marketId: selectedMarket.marketId,
         side,
-        amountInStroops: BigInt(Math.round(Number(buyAmountUsdc) * 10_000_000)),
+        amountUsdc: Number(commitAmountUsdc),
+        minBet: selectedMarket.view.config.min_bet,
+        maxBet: selectedMarket.view.config.max_bet,
       });
-      await refreshMarkets(marketId);
-      setStatus(`Bought ${side} shares for ${buyAmountUsdc} USDC at ${result.hash}.`);
-    });
-  }
-
-  async function handleSell(marketId: string, side: "YES" | "NO") {
-    await runAction(`sell-${side}`, async () => {
-      const wallet = walletFromConfig(config, walletLabel);
-      const result = await sellShares(wallet, {
-        marketId,
-        side,
-        shareAmount: BigInt(Math.round(Number(sellSharesAmount) * 10_000_000)),
+      const tx = await commitPosition(wallet, {
+        marketId: selectedMarket.marketId,
+        owner: wallet.publicKey,
+        commitment: proof.commitment,
+        amountInStroops: proof.amountInStroops,
+        proofHex: proof.proofHex,
       });
-      await refreshMarkets(marketId);
-      setStatus(`Sold ${sellSharesAmount} ${side} shares at ${result.hash}.`);
-    });
+
+      const next = [
+        ...savedPositions,
+        {
+          marketId: selectedMarket.marketId,
+          marketQuestion: selectedMarket.view.config.question,
+          category: selectedMarket.view.config.category,
+          owner: wallet.publicKey,
+          side,
+          amountInStroops: proof.amountInStroops.toString(),
+          salt: proof.salt,
+          commitment: proof.commitment,
+          nullifier: proof.nullifier,
+        },
+      ];
+      persistPositions(next);
+      await refreshMarkets();
+      setStatus(`Committed hidden ${side} position. Save your backup before claiming later. Tx ${tx.hash.slice(0, 10)}…`);
+    } catch (commitError) {
+      setError(commitError instanceof Error ? commitError.message : String(commitError));
+    } finally {
+      setBusy(null);
+    }
   }
 
-  async function handleResolve(marketId: string) {
-    await runAction("resolve", async () => {
-      const wallet = walletFromConfig(config, walletLabel);
-      const result = await resolveMarket(wallet, marketId);
-      await refreshMarkets(marketId);
-      setStatus(`Resolved ${formatShort(marketId)} at ${result.hash}.`);
-    });
+  async function handleResolveMarket() {
+    setError("Use the private tally finalize flow in the dashboard.");
   }
 
-  async function handleCollect(marketId: string) {
-    await runAction("collect", async () => {
-      const wallet = walletFromConfig(config, walletLabel);
-      const result = await collectPositionPayout(wallet, marketId);
-      await refreshMarkets(marketId);
-      setStatus(`Collected payout for ${formatShort(marketId)} at ${result.hash}.`);
-    });
+  async function handleClaim(position: LocalPosition) {
+    const wallet = walletByLabel(walletLabel);
+    if (!wallet) {
+      return;
+    }
+    const market = markets.find((entry) => entry.marketId === position.marketId);
+    if (!market || !market.view.state.resolved) {
+      setError("market not resolved yet");
+      return;
+    }
+
+    setBusy(`claim-${position.commitment}`);
+    setError("");
+    try {
+      const claimProof = await generateClaimProof({
+        marketId: position.marketId,
+        side: position.side,
+        amountInStroops: BigInt(position.amountInStroops),
+        salt: position.salt,
+        commitment: position.commitment,
+        nullifier: position.nullifier,
+        outcome: market.view.state.outcome,
+        distributablePot: market.view.state.distributable_pot,
+        winningSideTotal: market.view.state.winning_side_total,
+      });
+      const tx = await claimWinnings(wallet, {
+        marketId: position.marketId,
+        commitment: position.commitment,
+        nullifier: position.nullifier,
+        recipient: wallet.publicKey,
+        proofHex: claimProof.proofHex,
+      });
+
+      const next = savedPositions.map((entry) => (
+        entry.commitment === position.commitment
+          ? { ...entry, claimTxHash: tx.hash, claimedAt: Date.now() }
+          : entry
+      ));
+      persistPositions(next);
+      await refreshMarkets();
+      setStatus(`Claim submitted for ${position.commitment.slice(0, 10)}…`);
+    } catch (claimError) {
+      setError(claimError instanceof Error ? claimError.message : String(claimError));
+    } finally {
+      setBusy(null);
+    }
   }
+
+  function handleImportBackup() {
+    try {
+      const imported = JSON.parse(backupJson) as LocalPosition[];
+      persistPositions(imported);
+      setStatus(`Imported ${imported.length} private position records.`);
+    } catch (importError) {
+      setError(importError instanceof Error ? importError.message : String(importError));
+    }
+  }
+
+  async function handleGenerateReputation() {
+    const claimed = walletPositions.filter((position) => position.claimedAt);
+    if (claimed.length === 0) {
+      setError("claim at least one settled position first");
+      return;
+    }
+
+    setBusy("reputation");
+    setError("");
+    try {
+      const records = claimed.map((position) => {
+        const market = markets.find((entry) => entry.marketId === position.marketId);
+        const payout = market?.view.state.winning_side_total
+          ? (BigInt(position.amountInStroops) * market.view.state.distributable_pot) / market.view.state.winning_side_total
+          : 0n;
+        return {
+          marketId: position.marketId,
+          subjectId: position.owner,
+          category: position.category,
+          resolvedAt: Number(market?.view.state.settled_at ?? 0n),
+          claimedAt: Math.floor((position.claimedAt ?? Date.now()) / 1000),
+          amountInStroops: position.amountInStroops,
+          payoutInStroops: payout.toString(),
+          won: market ? position.side === (market.view.state.outcome ? "YES" : "NO") : false,
+        };
+      });
+
+      const serialized = await generateReputationProof({
+        subjectId: walletPublic,
+        category,
+        windowDays: 90,
+        descriptor: createClaimDescriptor({ claimType: "percentile", band: 25 }),
+        records,
+      });
+      const verified = await verifyReputationProof(serialized);
+      setReputationCredential(serialized);
+      setStatus(`Generated ${verified.isValid ? "verified" : "unverified"} portable reputation credential.`);
+    } catch (proofError) {
+      setError(proofError instanceof Error ? proofError.message : String(proofError));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const previewSnapshot = buildSnapshot(
+    walletPositions
+      .filter((position) => position.claimedAt)
+      .map((position) => ({
+        marketId: position.marketId,
+        subjectId: position.owner,
+        category: position.category,
+        resolvedAt: Math.floor((previewNow - 86_400_000) / 1000),
+        claimedAt: Math.floor((position.claimedAt ?? previewNow) / 1000),
+        amountInStroops: position.amountInStroops,
+        payoutInStroops: position.amountInStroops,
+        won: true,
+      })),
+    { category, subjectId: walletPublic, windowDays: 90 },
+  );
 
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(82,36,255,0.24),_transparent_35%),radial-gradient(circle_at_top_right,_rgba(0,212,255,0.16),_transparent_25%),linear-gradient(180deg,#07111f_0%,#09182d_48%,#050812_100%)] text-slate-100">
-      <div className="mx-auto flex w-full max-w-7xl flex-col gap-8 px-6 py-8 lg:px-10">
-        <section className="rounded-3xl border border-white/10 bg-white/5 p-6 shadow-[0_30px_80px_rgba(0,0,0,0.35)] backdrop-blur">
-          <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
-            <div className="max-w-3xl">
-              <p className="mb-3 inline-flex rounded-full border border-cyan-400/25 bg-cyan-400/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.3em] text-cyan-200">
-                BlindMarket
-              </p>
-              <h1 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl">
-                Trade YES and NO shares directly on Stellar.
-              </h1>
-              <p className="mt-4 max-w-2xl text-sm leading-7 text-slate-300 sm:text-base">
-                Markets run in parallel, quotes move with open interest, and each wallet can keep adding to either side or
-                unwind shares before resolution. The dashboard talks to the Soroban contract directly from the browser.
+    <main className="min-h-screen bg-[linear-gradient(180deg,#f6f1e8_0%,#efe8d9_45%,#e7dfce_100%)] px-4 py-8 text-stone-900">
+      <div className="mx-auto max-w-6xl space-y-6">
+        <section className="rounded-[28px] border border-stone-300 bg-white/75 p-6 shadow-[0_20px_60px_rgba(77,55,26,0.12)] backdrop-blur">
+          <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+            <div>
+              <p className="text-sm uppercase tracking-[0.25em] text-stone-500">BlindMarket</p>
+              <h1 className="font-serif text-4xl text-stone-900">Private positions, hidden flow, proof-backed reputation</h1>
+              <p className="mt-2 max-w-2xl text-sm text-stone-600">
+                Open markets reveal only privacy-safe metadata. Your side, size details, and claim secrets stay local until you decide to claim.
               </p>
             </div>
-
-            <div className="grid gap-3 rounded-2xl border border-white/10 bg-slate-950/60 p-4 text-sm text-slate-300 lg:min-w-[320px]">
-              <label className="grid gap-2">
-                <span className="text-xs uppercase tracking-[0.2em] text-slate-400">Wallet</span>
-                <select
-                  value={walletLabel}
-                  onChange={(event) => setWalletLabel(event.target.value)}
-                  className="rounded-xl border border-white/10 bg-slate-900 px-3 py-2 text-slate-100 outline-none"
-                >
-                  {config.wallets.map((wallet) => (
-                    <option key={wallet.label} value={wallet.label}>
-                      {wallet.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <div className="rounded-xl border border-white/10 bg-slate-900/80 p-3">
-                <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Address</div>
-                <div className="mt-1 break-all font-mono text-xs text-slate-200">
-                  {selectedWallet.publicKey}
-                </div>
-                <div className="mt-3 text-[11px] uppercase tracking-[0.2em] text-slate-500">USDC balance</div>
-                <div className="mt-1 text-sm text-slate-100">{toUsdc(usdcBalance).toFixed(6)} USDC</div>
-              </div>
+            <div className="grid gap-2 rounded-2xl bg-stone-900 px-4 py-3 text-sm text-stone-100">
+              <label className="font-medium">Wallet</label>
+              <select className="rounded-xl bg-stone-100 px-3 py-2 text-stone-900" value={walletLabel} onChange={(event) => setWalletLabel(event.target.value)}>
+                {config.wallets.map((wallet) => (
+                  <option key={wallet.label} value={wallet.label}>{wallet.label}</option>
+                ))}
+              </select>
+              <span>USDC balance: {toUsdc(usdcBalance).toFixed(2)}</span>
             </div>
           </div>
-
-          <div className="mt-6 flex flex-wrap gap-3 text-sm">
-            <button
-              onClick={() => {
-                void refreshMarkets(selectedMarketId);
-              }}
-              className="rounded-full border border-white/10 bg-white/5 px-4 py-2 font-medium text-slate-100 transition hover:bg-white/10"
-            >
-              Refresh markets
-            </button>
-            <div className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-4 py-2 text-emerald-200">
-              {status}
-            </div>
-            {error ? (
-              <div className="rounded-full border border-rose-400/20 bg-rose-400/10 px-4 py-2 text-rose-200">
-                {error}
-              </div>
-            ) : null}
-            {lastUpdatedAt ? (
-              <div className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-slate-300">
-                Updated {formatRelativeTime(lastUpdatedAt)}
-              </div>
-            ) : null}
-          </div>
-
-          {system ? (
-            <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <InfoRow label="Contract" value={config.contractId} />
-              <InfoRow label="USDC token" value={system.usdc_token} />
-              <InfoRow label="Reflector" value={system.reflector_contract} />
-              <InfoRow label="Admin" value={system.admin} />
-            </div>
-          ) : null}
         </section>
 
-        <section className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
-          <div className="rounded-3xl border border-white/10 bg-white/5 p-6 shadow-[0_30px_80px_rgba(0,0,0,0.25)] backdrop-blur">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <h2 className="text-xl font-semibold text-white">Selected market</h2>
-                <p className="mt-1 text-sm text-slate-400">Buy more shares, hold both sides, or sell shares back before resolution.</p>
+        <section className="grid gap-6 lg:grid-cols-[1.2fr,0.8fr]">
+          <div className="rounded-[28px] border border-stone-300 bg-white/85 p-6">
+            <h2 className="font-serif text-2xl">Create a market</h2>
+            <div className="mt-4 grid gap-3">
+              <input className="rounded-2xl border border-stone-300 px-4 py-3" value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Question" />
+              <select className="rounded-2xl border border-stone-300 px-4 py-3" value={category} onChange={(event) => setCategory(event.target.value)}>
+                {CATEGORY_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+              </select>
+              <div className="grid gap-3 md:grid-cols-2">
+                <input className="rounded-2xl border border-stone-300 px-4 py-3" value={endTimestamp} onChange={(event) => setEndTimestamp(event.target.value)} placeholder="End timestamp" />
+                <input className="rounded-2xl border border-stone-300 px-4 py-3" value={feeBps} onChange={(event) => setFeeBps(event.target.value)} placeholder="Fee bps" />
+                <input className="rounded-2xl border border-stone-300 px-4 py-3" value={minBet} onChange={(event) => setMinBet(event.target.value)} placeholder="Min bet stroops" />
+                <input className="rounded-2xl border border-stone-300 px-4 py-3" value={maxBet} onChange={(event) => setMaxBet(event.target.value)} placeholder="Max bet stroops" />
               </div>
-              <button
-                onClick={() => {
-                  if (markets[0]) {
-                    setSelectedMarketId(markets[0].marketId);
-                  }
-                }}
-                className="rounded-full border border-white/10 bg-slate-900 px-4 py-2 text-sm text-slate-100"
-              >
-                Focus first
+              {draftConditions.map((condition, index) => (
+                <div key={`${condition.assetSymbol}-${index}`} className="grid gap-3 rounded-2xl border border-stone-200 bg-stone-50 p-4 md:grid-cols-4">
+                  <select className="rounded-xl border border-stone-300 px-3 py-2" value={condition.assetSymbol} onChange={(event) => {
+                    const option = ORACLE_ASSET_OPTIONS.find((entry) => entry.symbol === event.target.value) ?? ORACLE_ASSET_OPTIONS[0];
+                    setDraftConditions((current) => current.map((entry, entryIndex) => entryIndex === index ? { ...entry, assetSymbol: option.symbol, oracleContract: option.oracleContract } : entry));
+                  }}>
+                    {ORACLE_ASSET_OPTIONS.map((option) => <option key={option.symbol} value={option.symbol}>{option.symbol}</option>)}
+                  </select>
+                  <select className="rounded-xl border border-stone-300 px-3 py-2" value={condition.comparator} onChange={(event) => {
+                    setDraftConditions((current) => current.map((entry, entryIndex) => entryIndex === index ? { ...entry, comparator: event.target.value as "gte" | "lte" } : entry));
+                  }}>
+                    <option value="gte">&gt;=</option>
+                    <option value="lte">&lt;=</option>
+                  </select>
+                  <input className="rounded-xl border border-stone-300 px-3 py-2" value={condition.threshold} onChange={(event) => {
+                    setDraftConditions((current) => current.map((entry, entryIndex) => entryIndex === index ? { ...entry, threshold: event.target.value } : entry));
+                  }} />
+                  {index < draftConditions.length - 1 ? (
+                    <select className="rounded-xl border border-stone-300 px-3 py-2" value={condition.joinWithNext} onChange={(event) => {
+                      setDraftConditions((current) => current.map((entry, entryIndex) => entryIndex === index ? { ...entry, joinWithNext: event.target.value as "AND" | "OR" } : entry));
+                    }}>
+                      <option value="AND">AND</option>
+                      <option value="OR">OR</option>
+                    </select>
+                  ) : (
+                    <button className="rounded-xl border border-dashed border-stone-400 px-3 py-2 text-sm" onClick={() => setDraftConditions((current) => [...current, defaultDraftCondition()])}>Add condition</button>
+                  )}
+                </div>
+              ))}
+              <button className="rounded-2xl bg-stone-900 px-4 py-3 text-stone-100" disabled={busy === "create"} onClick={() => void handleCreateMarket()}>
+                {busy === "create" ? "Creating..." : "Create private market"}
               </button>
             </div>
-
-            <div className="mt-5 grid gap-4 sm:grid-cols-2">
-              <label className="grid gap-2 sm:col-span-2">
-                <span className="text-xs uppercase tracking-[0.2em] text-slate-400">Market id</span>
-                <input
-                  value={selectedMarketId}
-                  onChange={(event) => setSelectedMarketId(event.target.value.trim())}
-                  placeholder="64 hex chars"
-                  className="rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 font-mono text-sm text-slate-100 outline-none placeholder:text-slate-500"
-                />
-              </label>
-
-              <label className="grid gap-2">
-                <span className="text-xs uppercase tracking-[0.2em] text-slate-400">Buy amount (USDC)</span>
-                <input
-                  value={buyAmountUsdc}
-                  onChange={(event) => setBuyAmountUsdc(event.target.value)}
-                  inputMode="decimal"
-                  className="rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-slate-100 outline-none"
-                />
-              </label>
-
-              <label className="grid gap-2">
-                <span className="text-xs uppercase tracking-[0.2em] text-slate-400">Sell shares</span>
-                <input
-                  value={sellSharesAmount}
-                  onChange={(event) => setSellSharesAmount(event.target.value)}
-                  inputMode="decimal"
-                  className="rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-slate-100 outline-none"
-                />
-              </label>
-            </div>
-
-            <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              <EstimatePanel
-                label="If you buy YES"
-                value={buyPreview ? `${toUsdc(buyPreview.yesShares).toFixed(4)} YES shares` : "--"}
-                detail={
-                  buyPreview
-                    ? exceedsBalance
-                      ? `Need more than ${toUsdc(usdcBalance).toFixed(6)} USDC in this wallet`
-                      : `for ${buyAmountUsdc} USDC at current LMSR curve`
-                    : "Enter a buy amount"
-                }
-                tone="yes"
-              />
-              <EstimatePanel
-                label="If you buy NO"
-                value={buyPreview ? `${toUsdc(buyPreview.noShares).toFixed(4)} NO shares` : "--"}
-                detail={
-                  buyPreview
-                    ? exceedsBalance
-                      ? `Need more than ${toUsdc(usdcBalance).toFixed(6)} USDC in this wallet`
-                      : `for ${buyAmountUsdc} USDC at current LMSR curve`
-                    : "Enter a buy amount"
-                }
-                tone="no"
-              />
-            </div>
-
-            <div className="mt-5 flex flex-wrap gap-3">
-              <button
-                disabled={busy !== null || exceedsBalance}
-                onClick={() => {
-                  void handleBuy(selectedMarketId, "YES");
-                }}
-                className="rounded-full bg-emerald-500 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-emerald-400 disabled:opacity-60"
-              >
-                {busy === "buy-YES" ? "Buying..." : "Buy YES"}
-              </button>
-              <button
-                disabled={busy !== null || exceedsBalance}
-                onClick={() => {
-                  void handleBuy(selectedMarketId, "NO");
-                }}
-                className="rounded-full bg-rose-500 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-rose-400 disabled:opacity-60"
-              >
-                {busy === "buy-NO" ? "Buying..." : "Buy NO"}
-              </button>
-              <button
-                disabled={busy !== null}
-                onClick={() => {
-                  void handleSell(selectedMarketId, "YES");
-                }}
-                className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-5 py-3 text-sm font-semibold text-emerald-100 transition hover:bg-emerald-400/20 disabled:opacity-60"
-              >
-                {busy === "sell-YES" ? "Selling..." : "Sell YES"}
-              </button>
-              <button
-                disabled={busy !== null}
-                onClick={() => {
-                  void handleSell(selectedMarketId, "NO");
-                }}
-                className="rounded-full border border-rose-400/20 bg-rose-400/10 px-5 py-3 text-sm font-semibold text-rose-100 transition hover:bg-rose-400/20 disabled:opacity-60"
-              >
-                {busy === "sell-NO" ? "Selling..." : "Sell NO"}
-              </button>
-              <button
-                disabled={busy !== null}
-                onClick={() => {
-                  void handleResolve(selectedMarketId);
-                }}
-                className="rounded-full border border-white/10 bg-white/5 px-5 py-3 text-sm font-semibold text-slate-100 transition hover:bg-white/10 disabled:opacity-60"
-              >
-                {busy === "resolve" ? "Resolving..." : "Resolve market"}
-              </button>
-              <button
-                disabled={busy !== null}
-                onClick={() => {
-                  void handleCollect(selectedMarketId);
-                }}
-                className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-5 py-3 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-400/20 disabled:opacity-60"
-              >
-                {busy === "collect" ? "Collecting..." : "Collect payout"}
-              </button>
-            </div>
-
-            {selectedMarket ? (
-              <>
-                <div className="mt-6 grid gap-3 sm:grid-cols-4">
-                  <MetricPanel label="Live YES" value={liveYesPrice} tone="yes" />
-                  <MetricPanel label="Live NO" value={liveNoPrice} tone="no" />
-                  <MetricPanel label="Wallet exposure" value={`${selectedWalletTotalShares} shares`} tone="neutral" />
-                  <MetricPanel label="Market bias" value={marketBias} tone="neutral" />
-                </div>
-
-                <div className="mt-6 overflow-hidden rounded-2xl border border-white/10 bg-slate-950/70">
-                  <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
-                    <div>
-                      <div className="text-[11px] uppercase tracking-[0.24em] text-slate-500">Live Price Curve</div>
-                      <div className="mt-1 text-sm text-slate-200">YES and NO quotes sampled from contract refreshes.</div>
-                    </div>
-                    <div className="text-xs text-slate-400">
-                      {selectedHistory.length > 0 ? `${selectedHistory.length} points` : "Waiting for points"}
-                    </div>
-                  </div>
-                  <div className="p-4">
-                    <PriceChart points={selectedHistory} />
-                  </div>
-                </div>
-
-                <div className="mt-6 grid gap-3 rounded-2xl border border-white/10 bg-slate-950/60 p-4 text-sm text-slate-300 sm:grid-cols-3">
-                  <InfoRow label="Your YES shares" value={toUsdc(selectedMarket.position.yes_shares).toFixed(4)} />
-                  <InfoRow label="Your NO shares" value={toUsdc(selectedMarket.position.no_shares).toFixed(4)} />
-                  <InfoRow label="Payout status" value={selectedMarket.position.claimed ? "Claimed" : "Open"} />
-                </div>
-
-                <div className="mt-6 rounded-2xl border border-cyan-400/20 bg-cyan-400/5 p-4">
-                  <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <div className="text-xs uppercase tracking-[0.2em] text-cyan-200/70">Current market</div>
-                      <h3 className="mt-1 text-lg font-semibold text-white">{selectedMarket.view.config.question}</h3>
-                      <p className="mt-2 text-sm text-cyan-100/80">{selectedMarketLogic}</p>
-                    </div>
-                    <div className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-1 text-xs font-semibold text-cyan-100">
-                      {selectedMarket.view.state.resolved ? "Resolved" : "Running"}
-                    </div>
-                  </div>
-                  <div className="mt-4 grid gap-3 text-sm text-slate-300 sm:grid-cols-2">
-                    <InfoRow label="Total collateral" value={`${toUsdc(selectedMarket.view.state.total_committed).toFixed(2)} USDC`} />
-                    <InfoRow label="YES quote" value={`${selectedMarket.view.state.public_yes_quote_bps} bps (${liveYesPrice})`} />
-                    <InfoRow label="NO quote" value={`${selectedMarket.view.state.public_no_quote_bps} bps (${liveNoPrice})`} />
-                    <InfoRow label="Ends at" value={new Date(Number(selectedMarket.view.config.end_timestamp) * 1000).toLocaleString()} />
-                    <InfoRow label="YES outstanding" value={toUsdc(selectedMarket.view.state.yes_shares_outstanding).toFixed(4)} />
-                    <InfoRow label="NO outstanding" value={toUsdc(selectedMarket.view.state.no_shares_outstanding).toFixed(4)} />
-                    <InfoRow label="Outcome" value={selectedMarket.view.state.resolved ? (selectedMarket.view.state.outcome ? "YES" : "NO") : "Pending"} />
-                    <InfoRow label="Winning pool" value={toUsdc(selectedMarket.view.state.winning_pool).toFixed(4)} />
-                  </div>
-                  {selectedMarket.view.state.resolved_conditions.length > 0 ? (
-                    <div className="mt-4 grid gap-2">
-                      {selectedMarket.view.state.resolved_conditions.map((condition, index) => (
-                        <div
-                          key={`${selectedMarketId}-resolved-${index}`}
-                          className="rounded-xl border border-white/10 bg-slate-950/50 px-3 py-2 text-sm text-slate-300"
-                        >
-                          <span className="font-medium text-white">{describeCondition(condition)}</span>
-                          {` | observed ${condition.observed_price.toString()} | ${condition.satisfied ? "true" : "false"}`}
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-              </>
-            ) : null}
           </div>
 
-          <div className="grid gap-6">
-            <section className="rounded-3xl border border-white/10 bg-white/5 p-6 shadow-[0_30px_80px_rgba(0,0,0,0.25)] backdrop-blur">
-              <h2 className="text-xl font-semibold text-white">Create market</h2>
-              <p className="mt-1 text-sm text-slate-400">Each market gets its own id and can run in parallel with every other market.</p>
+          <div className="rounded-[28px] border border-stone-300 bg-stone-900 p-6 text-stone-100">
+            <h2 className="font-serif text-2xl">Secret backup</h2>
+            <p className="mt-3 text-sm text-stone-300">
+              Commit salts and commitment metadata are your recovery material. Export after every position, and import here on a new browser before claiming.
+            </p>
+            <textarea className="mt-4 min-h-56 w-full rounded-2xl bg-stone-100 px-4 py-3 font-mono text-xs text-stone-900" value={backupJson || JSON.stringify(savedPositions, null, 2)} onChange={(event) => setBackupJson(event.target.value)} />
+            <div className="mt-3 flex gap-3">
+              <button className="rounded-2xl bg-amber-300 px-4 py-3 text-stone-900" onClick={handleImportBackup}>Import backup</button>
+              <button className="rounded-2xl border border-stone-500 px-4 py-3" onClick={() => setBackupJson(JSON.stringify(savedPositions, null, 2))}>Refresh export</button>
+            </div>
+          </div>
+        </section>
 
-              <div className="mt-5 grid gap-4">
-                <label className="grid gap-2">
-                  <span className="text-xs uppercase tracking-[0.2em] text-slate-400">Question</span>
-                  <textarea
-                    value={question}
-                    onChange={(event) => setQuestion(event.target.value)}
-                    rows={3}
-                    className="rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-sm text-slate-100 outline-none"
-                  />
-                </label>
-
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="grid gap-2">
-                    <span className="text-xs uppercase tracking-[0.2em] text-slate-400">End timestamp</span>
-                    <input
-                      value={endTimestamp}
-                      onChange={(event) => setEndTimestamp(event.target.value)}
-                      className="rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-sm text-slate-100 outline-none"
-                    />
-                  </label>
-                  <label className="grid gap-2">
-                    <span className="text-xs uppercase tracking-[0.2em] text-slate-400">Min trade</span>
-                    <input
-                      value={minBet}
-                      onChange={(event) => setMinBet(event.target.value)}
-                      className="rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-sm text-slate-100 outline-none"
-                    />
-                  </label>
-                  <label className="grid gap-2">
-                    <span className="text-xs uppercase tracking-[0.2em] text-slate-400">Max trade</span>
-                    <input
-                      value={maxBet}
-                      onChange={(event) => setMaxBet(event.target.value)}
-                      className="rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-sm text-slate-100 outline-none"
-                    />
-                  </label>
-                  <label className="grid gap-2 sm:col-span-2">
-                    <span className="text-xs uppercase tracking-[0.2em] text-slate-400">Fee bps</span>
-                    <input
-                      value={feeBps}
-                      onChange={(event) => setFeeBps(event.target.value)}
-                      className="rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-sm text-slate-100 outline-none"
-                    />
-                  </label>
-                </div>
-
-                <div className="grid gap-3">
-                  <div className="flex items-center justify-between gap-4">
-                    <div>
-                      <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Oracle conditions</div>
-                      <div className="mt-1 text-sm text-slate-500">Up to 5 conditions, evaluated left to right with AND / OR connectors.</div>
-                    </div>
-                    <button
-                      type="button"
-                      disabled={draftConditions.length >= 5}
-                      onClick={addDraftCondition}
-                      className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-100 disabled:opacity-50"
-                    >
-                      Add condition
-                    </button>
-                  </div>
-
-                  {draftConditions.map((condition, index) => (
-                    <div
-                      key={`draft-condition-${index}`}
-                      className="grid gap-3 rounded-2xl border border-white/10 bg-slate-950/50 p-4"
-                    >
-                      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                        <label className="grid gap-2">
-                          <span className="text-xs uppercase tracking-[0.2em] text-slate-400">Asset</span>
-                          <select
-                            value={condition.assetSymbol}
-                            onChange={(event) => {
-                              const nextAsset = conditionFromAsset(event.target.value);
-                              updateDraftCondition(index, {
-                                assetSymbol: nextAsset.symbol,
-                                oracleContract: nextAsset.oracleContract,
-                              });
-                            }}
-                            className="rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-sm text-slate-100 outline-none"
-                          >
-                            {ORACLE_ASSET_OPTIONS.map((option) => (
-                              <option key={option.symbol} value={option.symbol}>
-                                {option.symbol} · {option.group}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-
-                        <label className="grid gap-2">
-                          <span className="text-xs uppercase tracking-[0.2em] text-slate-400">Comparator</span>
-                          <select
-                            value={condition.comparator}
-                            onChange={(event) =>
-                              updateDraftCondition(index, {
-                                comparator: event.target.value as "gte" | "lte",
-                              })
-                            }
-                            className="rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-sm text-slate-100 outline-none"
-                          >
-                            <option value="gte">Greater or equal</option>
-                            <option value="lte">Less or equal</option>
-                          </select>
-                        </label>
-
-                        <label className="grid gap-2">
-                          <span className="text-xs uppercase tracking-[0.2em] text-slate-400">Threshold</span>
-                          <input
-                            value={condition.threshold}
-                            onChange={(event) => updateDraftCondition(index, { threshold: event.target.value })}
-                            className="rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-sm text-slate-100 outline-none"
-                          />
-                        </label>
-
-                        <div className="flex items-end">
-                          <button
-                            type="button"
-                            disabled={draftConditions.length === 1}
-                            onClick={() => removeDraftCondition(index)}
-                            className="w-full rounded-2xl border border-rose-400/20 bg-rose-400/10 px-4 py-3 text-sm font-medium text-rose-100 disabled:opacity-50"
-                          >
-                            Remove
-                          </button>
-                        </div>
-                      </div>
-
-                      {index < draftConditions.length - 1 ? (
-                        <label className="grid gap-2 sm:max-w-xs">
-                          <span className="text-xs uppercase tracking-[0.2em] text-slate-400">Connector to next</span>
-                          <select
-                            value={condition.joinWithNext}
-                            onChange={(event) =>
-                              updateDraftCondition(index, {
-                                joinWithNext: event.target.value as "AND" | "OR",
-                              })
-                            }
-                            className="rounded-2xl border border-white/10 bg-slate-900 px-4 py-3 text-sm text-slate-100 outline-none"
-                          >
-                            <option value="AND">AND</option>
-                            <option value="OR">OR</option>
-                          </select>
-                        </label>
-                      ) : null}
-
-                      <div className="text-xs text-slate-500">
-                        Oracle contract: <span className="font-mono">{condition.oracleContract}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
+        <section className="grid gap-6 lg:grid-cols-[1.2fr,0.8fr]">
+          <div className="rounded-[28px] border border-stone-300 bg-white/85 p-6">
+            <div className="flex items-center justify-between">
+              <h2 className="font-serif text-2xl">Open and settled markets</h2>
+              <button className="rounded-2xl border border-stone-300 px-4 py-2 text-sm" onClick={() => void refreshMarkets()}>Refresh</button>
+            </div>
+            <div className="mt-4 grid gap-3">
+              {markets.map((market) => (
                 <button
-                  disabled={busy !== null}
-                  onClick={() => {
-                    void handleCreateMarket();
-                  }}
-                  className="rounded-full bg-cyan-400 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:opacity-60"
+                  key={market.marketId}
+                  className={`rounded-2xl border px-4 py-4 text-left ${market.marketId === selectedMarketId ? "border-stone-900 bg-stone-900 text-stone-100" : "border-stone-300 bg-stone-50"}`}
+                  onClick={() => setSelectedMarketId(market.marketId)}
                 >
-                  {busy === "create" ? "Creating..." : "Create market"}
-                </button>
-              </div>
-            </section>
-
-            <section className="rounded-3xl border border-white/10 bg-white/5 p-6 shadow-[0_30px_80px_rgba(0,0,0,0.25)] backdrop-blur">
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <h2 className="text-xl font-semibold text-white">All markets</h2>
-                  <p className="mt-1 text-sm text-slate-400">This wallet’s live YES / NO balances are fetched directly from the contract.</p>
-                </div>
-                <div className="text-sm text-slate-400">{markets.length} total</div>
-              </div>
-
-              <div className="mt-5 grid gap-4">
-                {markets.map((market) => (
-                  <article
-                    key={market.marketId}
-                    className="rounded-2xl border border-white/10 bg-slate-950/60 p-4 transition hover:border-cyan-400/20 hover:bg-slate-950"
-                  >
-                    <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-[11px] uppercase tracking-[0.24em] text-slate-400">
-                            {market.view.state.resolved ? "Resolved" : "Running"}
-                          </span>
-                          <span className="font-mono text-xs text-slate-500">{formatShort(market.marketId)}</span>
-                          {selectedMarketId === market.marketId ? (
-                            <span className="rounded-full border border-cyan-400/20 bg-cyan-400/10 px-2 py-1 text-[11px] text-cyan-100">
-                              Selected
-                            </span>
-                          ) : null}
-                        </div>
-                        <h3 className="mt-3 text-lg font-semibold text-white">{market.view.config.question}</h3>
-                        <div className="mt-2 text-sm text-slate-500">{describeMarketLogic(market.view)}</div>
-                        <div className="mt-3 grid gap-2 text-sm text-slate-400 sm:grid-cols-2">
-                          <div>YES quote: {formatPriceBps(market.view.state.public_yes_quote_bps)}</div>
-                          <div>NO quote: {formatPriceBps(market.view.state.public_no_quote_bps)}</div>
-                          <div>Collateral: {toUsdc(market.view.state.total_committed).toFixed(2)} USDC</div>
-                          <div>Outcome: {market.view.state.resolved ? (market.view.state.outcome ? "YES" : "NO") : "pending"}</div>
-                          <div>Your YES: {toUsdc(market.position.yes_shares).toFixed(4)}</div>
-                          <div>Your NO: {toUsdc(market.position.no_shares).toFixed(4)}</div>
-                        </div>
-                      </div>
-
-                      <div className="flex flex-wrap gap-2">
-                        <button
-                          onClick={() => setSelectedMarketId(market.marketId)}
-                          className="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-100"
-                        >
-                          Open
-                        </button>
-                        <button
-                          onClick={() => {
-                            setSelectedMarketId(market.marketId);
-                            void handleBuy(market.marketId, "YES");
-                          }}
-                          className="rounded-full bg-emerald-500 px-3 py-2 text-sm font-semibold text-slate-950"
-                        >
-                          Buy YES
-                        </button>
-                        <button
-                          onClick={() => {
-                            setSelectedMarketId(market.marketId);
-                            void handleBuy(market.marketId, "NO");
-                          }}
-                          className="rounded-full bg-rose-500 px-3 py-2 text-sm font-semibold text-slate-950"
-                        >
-                          Buy NO
-                        </button>
-                      </div>
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <div className="text-xs uppercase tracking-[0.2em]">{market.view.config.category}</div>
+                      <div className="mt-1 font-medium">{market.view.config.question}</div>
                     </div>
-                  </article>
-                ))}
-              </div>
-            </section>
+                    <div className="text-right text-sm">
+                      <div>{market.view.state.resolved ? "Resolved" : "Open"}</div>
+                      <div>Total pot: {toUsdc(market.view.state.total_locked_collateral).toFixed(2)} USDC</div>
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
           </div>
+
+          <div className="rounded-[28px] border border-stone-300 bg-white/85 p-6">
+            <h2 className="font-serif text-2xl">Selected market</h2>
+            {selectedMarket ? (
+              <div className="mt-4 space-y-4">
+                <div className="rounded-2xl bg-stone-50 p-4 text-sm">
+                  <div className="font-medium">{selectedMarket.view.config.question}</div>
+                  <div className="mt-2">Category: {selectedMarket.view.config.category}</div>
+                  <div>Commitments: {selectedMarket.view.state.commitment_count}</div>
+                  <div>Total locked: {toUsdc(selectedMarket.view.state.total_locked_collateral).toFixed(2)} USDC</div>
+                  {selectedMarket.view.state.resolved ? (
+                    <>
+                      <div>Outcome: {selectedMarket.view.state.outcome ? "YES" : "NO"}</div>
+                      <div>Distributable pot: {toUsdc(selectedMarket.view.state.distributable_pot).toFixed(2)} USDC</div>
+                      <div>Winning-side aggregate: {toUsdc(selectedMarket.view.state.winning_side_total).toFixed(2)} USDC</div>
+                      <div>Settled at: {formatTimestamp(selectedMarket.view.state.settled_at)}</div>
+                    </>
+                  ) : (
+                    <div>Open until {new Date(Number(selectedMarket.view.config.end_timestamp) * 1000).toLocaleString()}</div>
+                  )}
+                </div>
+
+                {!selectedMarket.view.state.resolved ? (
+                  <>
+                    <input className="w-full rounded-2xl border border-stone-300 px-4 py-3" value={commitAmountUsdc} onChange={(event) => setCommitAmountUsdc(event.target.value)} placeholder="Commit amount (USDC)" />
+                    <div className="grid grid-cols-2 gap-3">
+                      <button className="rounded-2xl bg-emerald-600 px-4 py-3 text-white" disabled={busy === "commit-YES"} onClick={() => void handleCommit("YES")}>
+                        {busy === "commit-YES" ? "Committing..." : "Commit hidden YES"}
+                      </button>
+                      <button className="rounded-2xl bg-rose-600 px-4 py-3 text-white" disabled={busy === "commit-NO"} onClick={() => void handleCommit("NO")}>
+                        {busy === "commit-NO" ? "Committing..." : "Commit hidden NO"}
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="rounded-2xl border border-dashed border-stone-300 p-4 text-sm">
+                    Only the winner-side aggregate is disclosed here. Losing-side totals remain hidden.
+                  </div>
+                )}
+
+                <div className="rounded-2xl border border-stone-200 p-4">
+                  <div className="mb-2 font-medium">Resolver controls</div>
+                  <input className="w-full rounded-2xl border border-stone-300 px-4 py-3" value={resolveWinningTotal} onChange={(event) => setResolveWinningTotal(event.target.value)} placeholder="Winning-side total in stroops" />
+                  <button className="mt-3 w-full rounded-2xl bg-stone-900 px-4 py-3 text-stone-100" disabled={busy === "resolve"} onClick={() => void handleResolveMarket()}>
+                    {busy === "resolve" ? "Resolving..." : "Resolve with winner aggregate"}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <p className="mt-4 text-sm text-stone-600">Select a market to manage commitments or claim after settlement.</p>
+            )}
+          </div>
+        </section>
+
+        <section className="grid gap-6 lg:grid-cols-[1.1fr,0.9fr]">
+          <div className="rounded-[28px] border border-stone-300 bg-white/85 p-6">
+            <h2 className="font-serif text-2xl">Your hidden positions</h2>
+            <div className="mt-4 grid gap-3">
+              {selectedMarketPositions.length === 0 ? (
+                <p className="text-sm text-stone-600">No local secret material saved for this market yet.</p>
+              ) : selectedMarketPositions.map((position) => (
+                <div key={position.commitment} className="rounded-2xl border border-stone-200 bg-stone-50 p-4 text-sm">
+                  <div className="font-medium">{position.marketQuestion}</div>
+                  <div className="mt-2">Commitment: {position.commitment.slice(0, 18)}…</div>
+                  <div>Amount: {toUsdc(BigInt(position.amountInStroops)).toFixed(2)} USDC</div>
+                  <div>Claim status: {position.claimedAt ? "Claimed" : "Waiting"}</div>
+                  <button className="mt-3 rounded-2xl bg-amber-300 px-4 py-3 text-stone-900" disabled={busy === `claim-${position.commitment}`} onClick={() => void handleClaim(position)}>
+                    {busy === `claim-${position.commitment}` ? "Claiming..." : "Generate claim proof and claim"}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="rounded-[28px] border border-stone-300 bg-white/85 p-6">
+            <h2 className="font-serif text-2xl">Portable reputation</h2>
+            <p className="mt-3 text-sm text-stone-600">
+              Reputation is computed from claimed settled positions only, segmented by category and fixed windows.
+            </p>
+            <div className="mt-4 rounded-2xl bg-stone-50 p-4 text-sm">
+              <div>Window preview: 90d</div>
+              <div>Category: {previewSnapshot.category}</div>
+              <div>Claimed records in scope: {previewSnapshot.records.length}</div>
+            </div>
+            <button className="mt-4 w-full rounded-2xl bg-stone-900 px-4 py-3 text-stone-100" disabled={busy === "reputation"} onClick={() => void handleGenerateReputation()}>
+              {busy === "reputation" ? "Generating..." : "Generate top-25% 90d credential"}
+            </button>
+            <textarea className="mt-4 min-h-56 w-full rounded-2xl border border-stone-300 px-4 py-3 font-mono text-xs" value={reputationCredential} onChange={(event) => setReputationCredential(event.target.value)} placeholder="Portable credential appears here" />
+          </div>
+        </section>
+
+        <section className="rounded-[28px] border border-stone-300 bg-white/85 p-6">
+          <div className="font-medium text-stone-900">Status</div>
+          <p className="mt-2 text-sm text-stone-700">{status}</p>
+          {error ? <p className="mt-2 text-sm text-rose-700">{error}</p> : null}
         </section>
       </div>
     </main>
   );
-}
-
-function InfoRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-xl border border-white/10 bg-slate-900/70 p-3">
-      <div className="text-[11px] uppercase tracking-[0.2em] text-slate-500">{label}</div>
-      <div className="mt-1 text-sm text-slate-100">{value}</div>
-    </div>
-  );
-}
-
-function MetricPanel({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: string;
-  tone: "yes" | "no" | "neutral";
-}) {
-  const className =
-    tone === "yes"
-      ? "border-emerald-400/25 bg-emerald-400/10 text-emerald-100"
-      : tone === "no"
-        ? "border-rose-400/25 bg-rose-400/10 text-rose-100"
-        : "border-white/10 bg-slate-900/70 text-slate-100";
-
-  return (
-    <div className={`rounded-2xl border p-4 ${className}`}>
-      <div className="text-[11px] uppercase tracking-[0.24em] text-current/70">{label}</div>
-      <div className="mt-2 text-xl font-semibold">{value}</div>
-    </div>
-  );
-}
-
-function EstimatePanel({
-  label,
-  value,
-  detail,
-  tone,
-}: {
-  label: string;
-  value: string;
-  detail: string;
-  tone: "yes" | "no";
-}) {
-  const className =
-    tone === "yes"
-      ? "border-emerald-400/20 bg-emerald-400/8 text-emerald-100"
-      : "border-rose-400/20 bg-rose-400/8 text-rose-100";
-
-  return (
-    <div className={`rounded-2xl border p-4 ${className}`}>
-      <div className="text-[11px] uppercase tracking-[0.24em] text-current/70">{label}</div>
-      <div className="mt-2 text-lg font-semibold">{value}</div>
-      <div className="mt-1 text-xs text-current/70">{detail}</div>
-    </div>
-  );
-}
-
-function PriceChart({ points }: { points: PricePoint[] }) {
-  if (points.length < 2) {
-    return (
-      <div className="flex h-60 items-center justify-center rounded-xl border border-dashed border-white/10 bg-slate-950/50 text-sm text-slate-500">
-        Waiting for live quote history
-      </div>
-    );
-  }
-
-  const width = 760;
-  const height = 240;
-  const padding = 18;
-  const minTime = points[0].at;
-  const maxTime = points[points.length - 1].at;
-  const timeSpan = Math.max(1, maxTime - minTime);
-
-  const mapX = (point: PricePoint) =>
-    padding + ((point.at - minTime) / timeSpan) * (width - padding * 2);
-  const mapY = (bps: number) =>
-    height - padding - (bps / 10000) * (height - padding * 2);
-
-  const yesPath = points
-    .map((point, index) => `${index === 0 ? "M" : "L"} ${mapX(point).toFixed(2)} ${mapY(point.yesBps).toFixed(2)}`)
-    .join(" ");
-  const noPath = points
-    .map((point, index) => `${index === 0 ? "M" : "L"} ${mapX(point).toFixed(2)} ${mapY(point.noBps).toFixed(2)}`)
-    .join(" ");
-
-  const latest = points[points.length - 1];
-
-  return (
-    <div className="space-y-3">
-      <svg viewBox={`0 0 ${width} ${height}`} className="h-60 w-full overflow-visible rounded-xl bg-[linear-gradient(180deg,rgba(15,23,42,0.65),rgba(2,6,23,0.95))]">
-        {[2500, 5000, 7500].map((bps) => {
-          const y = mapY(bps);
-          return (
-            <g key={bps}>
-              <line x1={padding} y1={y} x2={width - padding} y2={y} stroke="rgba(148,163,184,0.18)" strokeDasharray="4 6" />
-              <text x={width - padding + 4} y={y + 4} fill="rgba(148,163,184,0.75)" fontSize="10">
-                {(bps / 100).toFixed(0)}%
-              </text>
-            </g>
-          );
-        })}
-        <path d={yesPath} fill="none" stroke="rgb(52 211 153)" strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" />
-        <path d={noPath} fill="none" stroke="rgb(251 113 133)" strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" />
-        <circle cx={mapX(latest)} cy={mapY(latest.yesBps)} r="4" fill="rgb(52 211 153)" />
-        <circle cx={mapX(latest)} cy={mapY(latest.noBps)} r="4" fill="rgb(251 113 133)" />
-      </svg>
-      <div className="flex flex-wrap gap-3 text-xs text-slate-300">
-        <span className="inline-flex items-center gap-2 rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1">
-          <span className="h-2 w-2 rounded-full bg-emerald-400" />
-          YES {formatPriceBps(BigInt(latest.yesBps))}
-        </span>
-        <span className="inline-flex items-center gap-2 rounded-full border border-rose-400/20 bg-rose-400/10 px-3 py-1">
-          <span className="h-2 w-2 rounded-full bg-rose-400" />
-          NO {formatPriceBps(BigInt(latest.noBps))}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-function mergeHistory(history: Record<string, PricePoint[]>, rows: MarketRow[]) {
-  const next = { ...history };
-  const now = Date.now();
-
-  for (const row of rows) {
-    const point = {
-      at: now,
-      yesBps: Number(row.view.state.public_yes_quote_bps),
-      noBps: Number(row.view.state.public_no_quote_bps),
-    };
-    const existing = next[row.marketId] ?? [];
-    const last = existing[existing.length - 1];
-    if (last && last.yesBps === point.yesBps && last.noBps === point.noBps) {
-      continue;
-    }
-    next[row.marketId] = [...existing, point].slice(-48);
-  }
-
-  return next;
 }

@@ -4,9 +4,13 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "test": "node --test",
-    "check:circuits": "nargo compile --program-dir circuits/commit && nargo compile --program-dir circuits/claim",
-    "build:contract": "cargo build --manifest-path contracts/blind_market/Cargo.toml --target wasm32v1-none --release"
+    "test": "npm run test:backend && npm run test:js",
+    "test:backend": "cargo test --manifest-path contracts/ultrahonk_soroban_verifier/Cargo.toml && cargo test --manifest-path contracts/ultrahonk_verifier/Cargo.toml && CARGO_BUILD_JOBS=1 cargo test --manifest-path contracts/blind_market/Cargo.toml",
+    "test:js": "node --test test/*.js",
+    "check:circuits": "nargo compile --program-dir circuits/commit && nargo compile --program-dir circuits/claim && nargo compile --program-dir circuits/tally_update && nargo compile --program-dir circuits/tally_finalize && nargo compile --program-dir circuits/reputation",
+    "build:contract": "cargo build --manifest-path contracts/blind_market/Cargo.toml --target wasm32v1-none --release",
+    "generate:proof-fixtures": "node scripts/generate-proof-fixtures.js",
+    "smoke:mpc-e2e": "node scripts/smoke-mpc-e2e-dynamic.mjs"
   },
   "dependencies": {
     "@aztec/bb.js": "^0.87.0",
