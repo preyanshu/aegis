@@ -99,7 +99,7 @@ async function placeBet(userSecretKey, side, amountUsdc) {
       commitmentHex.slice(2),
       '--collateral_amount',
       amountInStroops.toString(),
-      '--proof',
+      '--proof_bytes-file-path',
       proofPath,
     ],
     { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },

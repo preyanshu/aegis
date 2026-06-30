@@ -2,10 +2,16 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Keypair } from "@stellar/stellar-sdk";
-import dotenv from "dotenv";
+import { loadEnv } from "./env.js";
 import { initBarretenberg, poseidon2PermutationFields } from "./barretenberg.js";
 
-dotenv.config({ override: true });
+loadEnv({ preserve: ["MARKET_CONTRACT_ID", "MPC_BACKEND_URL"] });
+
+execFileSync(process.execPath, ["./scripts/smoke-mpc-e2e-dynamic.mjs"], {
+  stdio: "inherit",
+  env: process.env,
+});
+process.exit(0);
 
 const backendUrl = process.env.MPC_BACKEND_URL ?? "http://127.0.0.1:4002";
 const childEnvKeys = [
@@ -29,6 +35,7 @@ const marketFixture = JSON.parse(readFileSync("./verifier/fixtures/market-fixtur
 const marketId = marketFixture.marketId;
 const admin = Keypair.fromSecret(process.env.ADMIN_SECRET_KEY);
 const user2 = Keypair.fromSecret(process.env.USER2_SECRET_KEY);
+const FIELD_MODULUS = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001n;
 
 function runNode(script, args = [], extraEnv = {}) {
   const env = {
@@ -125,13 +132,26 @@ async function fetchJson(path, init) {
   return payload;
 }
 
-function deterministicShares(total, count) {
+function modField(value) {
+  const normalized = value % FIELD_MODULUS;
+  return normalized >= 0n ? normalized : normalized + FIELD_MODULUS;
+}
+
+async function additiveShares(total, count, seedInputs) {
   const shares = [];
-  let remaining = total;
+  let remaining = modField(total);
+  const seedTuple = [...seedInputs].slice(0, 4);
+  while (seedTuple.length < 4) {
+    seedTuple.push(0n);
+  }
+  const [seed] = await poseidon2PermutationFields(seedTuple);
+  let state = BigInt(seed);
   for (let index = 0; index < count - 1; index += 1) {
-    const next = BigInt(index + 1);
-    shares.push(next);
-    remaining -= next;
+    const [nextShare] = await poseidon2PermutationFields([state, BigInt(index + 1), total, remaining]);
+    const share = BigInt(nextShare);
+    shares.push(share);
+    remaining = modField(remaining + FIELD_MODULUS - share);
+    state = share;
   }
   shares.push(remaining);
   return shares;
@@ -152,11 +172,12 @@ async function createMarketIfNeeded() {
     });
     console.log("create market: ok");
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!message.includes("market already exists")) {
+    try {
+      parseContractView();
+      console.log("create market: already exists, continuing");
+    } catch {
       throw error;
     }
-    console.log("create market: already exists, continuing");
   }
   return endTimestamp;
 }
@@ -184,7 +205,7 @@ function submitCommit(label, secretKey, owner, commitment, amountStroops, proofP
       commitment.slice(2),
       "--collateral_amount",
       amountStroops.toString(),
-      "--proof",
+      "--proof_bytes-file-path",
       proofPath,
     ],
   );
@@ -219,7 +240,7 @@ function submitTally(shareRoot, nextTallyCommitment, tallyProofPath) {
       nextTallyCommitment.slice(2),
       "--share_commitment_root",
       shareRoot.slice(2),
-      "--proof",
+      "--proof_bytes-file-path",
       tallyProofPath,
     ],
   );
@@ -232,8 +253,18 @@ function submitTally(shareRoot, nextTallyCommitment, tallyProofPath) {
 }
 
 async function uploadSharePackets(tallyTxHash, shareRoot) {
-  const yesShares = deterministicShares(BigInt(marketFixture.amount), 5);
-  const noShares = Array(5).fill(0n);
+  const yesShares = await additiveShares(BigInt(marketFixture.amount), 5, [
+    BigInt(marketFixture.marketField),
+    BigInt(marketFixture.commitment),
+    1n,
+    BigInt(marketFixture.amount),
+  ]);
+  const noShares = await additiveShares(0n, 5, [
+    BigInt(marketFixture.marketField),
+    BigInt(marketFixture.commitment),
+    0n,
+    0n,
+  ]);
   const shareSalts = ["0x1111", "0x2222", "0x3333", "0x4444", "0x5555"].map(
     (value) => `0x${value.slice(2).padStart(64, "0")}`,
   );

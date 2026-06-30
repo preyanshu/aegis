@@ -1,28 +1,29 @@
-import dotenv from "dotenv";
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
 import mongoose from "mongoose";
+import { loadEnv } from "../../scripts/env.js";
 import {
   Address,
   BASE_FEE,
   Contract,
   Keypair,
   TransactionBuilder,
-  authorizeInvocation,
   nativeToScVal,
   rpc,
   scValToNative,
 } from "@stellar/stellar-sdk";
 import { Buffer } from "node:buffer";
-dotenv.config({ override: true });
+
+loadEnv({ preserve: ["PORT", "MONGODB_URI", "CORS_ORIGIN", "MARKET_CONTRACT_ID"] });
 
 const PORT = Number(process.env.PORT ?? 4001);
 const MONGODB_URI = process.env.MONGODB_URI ?? "mongodb://127.0.0.1:27017/verdict";
 const CORS_ORIGIN = process.env.CORS_ORIGIN ?? "*";
 const SHARD_COUNT = 5;
 const SHARD_THRESHOLD = 3;
+const FIELD_MODULUS = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001n;
 
 mongoose.set("strictQuery", true);
 
@@ -207,7 +208,7 @@ function bytes32ScVal(hex) {
 }
 
 function scValAddress(address) {
-  return Address.fromString(address).toScVal();
+  return nativeToScVal(Address.fromString(address), { type: "address" });
 }
 
 function bytesToHex(bytes) {
@@ -220,6 +221,11 @@ function asBigInt(value) {
   if (typeof value === "string") return BigInt(value);
   if (value instanceof Uint8Array) return BigInt(`0x${bytesToHex(value)}`);
   return BigInt(0);
+}
+
+function modField(value) {
+  const normalized = value % FIELD_MODULUS;
+  return normalized >= 0n ? normalized : normalized + FIELD_MODULUS;
 }
 
 async function readContract(method, args = []) {
@@ -282,25 +288,6 @@ async function submitFinalize(marketId, aggregate) {
     .setTimeout(120)
     .build();
   const prepared = await server.prepareTransaction(tx);
-  const latestLedger = await server.getLatestLedger();
-  const authExpiration = latestLedger.sequence + 100;
-  const invokeOp = prepared.operations[0];
-  const authEntries = invokeOp.auth ?? [];
-  for (const [index, entry] of authEntries.entries()) {
-    const signer = index === 0 ? cfg.finalizer : selectedShardSigners[index - 1];
-    if (!signer) {
-      throw new Error(`missing shard signer for auth entry ${index} on market ${marketId}`);
-    }
-    authEntries[index] = await authorizeInvocation({
-      signer,
-      validUntilLedgerSeq: authExpiration,
-      invocation: entry.rootInvocation(),
-      networkPassphrase: cfg.networkPassphrase,
-      publicKey: signer.publicKey(),
-      authV2: true,
-    });
-  }
-  invokeOp.auth = authEntries;
   prepared.sign(cfg.finalizer);
   try {
     const sent = await server.sendTransaction(prepared);
@@ -347,8 +334,8 @@ async function aggregateMarketShares(marketId) {
     if (entry.shards.size !== SHARD_COUNT) continue;
     talliedCommitmentCount += 1;
     for (const row of entry.shards.values()) {
-      yesTotal += BigInt(row.yesShare);
-      noTotal += BigInt(row.noShare);
+      yesTotal = modField(yesTotal + BigInt(row.yesShare));
+      noTotal = modField(noTotal + BigInt(row.noShare));
     }
   }
 

@@ -144,7 +144,7 @@ async function claimWinnings(betDataFile, userSecretKey) {
       nullifierHex.slice(2),
       '--recipient',
       userKeypair.publicKey(),
-      '--proof',
+      '--proof_bytes-file-path',
       proofPath,
     ],
     { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },

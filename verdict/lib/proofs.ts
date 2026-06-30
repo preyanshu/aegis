@@ -20,6 +20,7 @@ import { Buffer } from "buffer";
 type CircuitArtifact = CompiledCircuit;
 
 const proofOptions = { keccak: true };
+const FIELD_MODULUS = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001n;
 
 let commitCircuitPromise: Promise<CircuitArtifact> | null = null;
 let tallyUpdateCircuitPromise: Promise<CircuitArtifact> | null = null;
@@ -92,18 +93,18 @@ function randomBigIntBelow(maxExclusive: bigint) {
     return 0n;
   }
 
-  const bytes = new Uint8Array(8);
+  const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
   return BigInt(`0x${bytesToHex(bytes)}`) % maxExclusive;
 }
 
 function additiveShares(total: bigint, count: number) {
   const shares: bigint[] = [];
-  let remaining = total;
+  let remaining = ((total % FIELD_MODULUS) + FIELD_MODULUS) % FIELD_MODULUS;
   for (let index = 0; index < count - 1; index += 1) {
-    const next = randomBigIntBelow(remaining + 1n);
+    const next = randomBigIntBelow(FIELD_MODULUS);
     shares.push(next);
-    remaining -= next;
+    remaining = (remaining + FIELD_MODULUS - next) % FIELD_MODULUS;
   }
   shares.push(remaining);
   return shares;

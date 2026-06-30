@@ -6,6 +6,7 @@ import { createUltraHonkBackend, initBarretenberg } from './barretenberg.js';
 
 const proofOptions = { keccak: true };
 const FIELD_MASK = (1n << 248n) - 1n;
+const FIELD_MODULUS = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001n;
 const FIXTURE_DIR = resolve('verifier', 'fixtures');
 
 const fixture = {
@@ -42,10 +43,29 @@ function publicInputsBytes(values) {
   return Buffer.concat(values.map((value) => fieldBytes(value)));
 }
 
-function deterministicShares(total, count) {
-  const base = Array.from({ length: count - 1 }, (_, index) => BigInt(index + 1));
-  const used = base.reduce((sum, value) => sum + value, 0n);
-  return [...base, total - used];
+function modField(value) {
+  const normalized = value % FIELD_MODULUS;
+  return normalized >= 0n ? normalized : normalized + FIELD_MODULUS;
+}
+
+async function additiveShares(total, count, seedInputs) {
+  const shares = [];
+  let remaining = modField(total);
+  const seedTuple = [...seedInputs].slice(0, 4);
+  while (seedTuple.length < 4) {
+    seedTuple.push(0n);
+  }
+  const [seed] = await poseidon2Permutation(seedTuple);
+  let state = BigInt(seed);
+  for (let index = 0; index < count - 1; index += 1) {
+    const [nextShare] = await poseidon2Permutation([state, BigInt(index + 1), total, remaining]);
+    const share = BigInt(nextShare);
+    shares.push(share);
+    remaining = modField(remaining + FIELD_MODULUS - share);
+    state = share;
+  }
+  shares.push(remaining);
+  return shares;
 }
 
 async function generate() {
@@ -74,8 +94,18 @@ async function generate() {
     fixture.direction,
   ]);
   const nextTallyCommitment = BigInt(nextTallyCommitmentRaw);
-  const yesShares = deterministicShares(fixture.amount, 5);
-  const noShares = Array(5).fill(0n);
+  const yesShares = await additiveShares(fixture.amount, 5, [
+    marketField,
+    commitment,
+    1n,
+    fixture.amount,
+  ]);
+  const noShares = await additiveShares(0n, 5, [
+    marketField,
+    commitment,
+    0n,
+    0n,
+  ]);
   const shareSalts = [
     0x1111n,
     0x2222n,

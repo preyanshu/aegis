@@ -17,6 +17,7 @@ import { loadEnv } from './env.js';
 loadEnv({
   preserve: [
     'END_TIMESTAMP',
+    'MARKET_CONTRACT_ID',
     'MARKET_CONDITION_COUNT',
     'MIN_BET',
     'MAX_BET',

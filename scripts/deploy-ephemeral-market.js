@@ -14,9 +14,9 @@ import {
 } from '@stellar/stellar-sdk';
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import dotenv from 'dotenv';
+import { loadEnv } from './env.js';
 
-dotenv.config();
+loadEnv();
 
 const rpc = new StellarRpc.Server(process.env.STELLAR_RPC);
 const deployer = Keypair.fromSecret(process.env.ADMIN_SECRET_KEY);

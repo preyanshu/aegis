@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import dotenv from "dotenv";
+import { loadEnv } from "./env.js";
 import { Noir } from "@noir-lang/noir_js";
 import {
   Address,
@@ -14,7 +14,7 @@ import {
 } from "@stellar/stellar-sdk";
 import { createUltraHonkBackend, initBarretenberg, poseidon2PermutationFields } from "./barretenberg.js";
 
-dotenv.config({ override: true });
+loadEnv({ preserve: ["MARKET_CONTRACT_ID", "MPC_BACKEND_URL"] });
 
 const backendUrl = process.env.MPC_BACKEND_URL ?? "http://127.0.0.1:4002";
 const childEnvKeys = [
@@ -39,6 +39,7 @@ const tallyUpdateCircuit = JSON.parse(readFileSync("./circuits/tally_update/targ
 const claimCircuit = JSON.parse(readFileSync("./circuits/claim/target/claim.json", "utf8"));
 const proofOptions = { keccak: true };
 const FIELD_MASK = (1n << 248n) - 1n;
+const FIELD_MODULUS = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001n;
 
 const marketId = randomBytes(32).toString("hex");
 const admin = Keypair.fromSecret(process.env.ADMIN_SECRET_KEY);
@@ -58,15 +59,26 @@ function randomFieldSalt() {
   return `0x${randomBytes(31).toString("hex")}`;
 }
 
-function deterministicShares(total, count) {
+function modField(value) {
+  const normalized = value % FIELD_MODULUS;
+  return normalized >= 0n ? normalized : normalized + FIELD_MODULUS;
+}
+
+async function additiveShares(total, count, seedInputs) {
   const shares = [];
-  let remaining = total;
+  let remaining = modField(total);
+  const seedTuple = [...seedInputs].slice(0, 4);
+  while (seedTuple.length < 4) {
+    seedTuple.push(0n);
+  }
+  const [seed] = await poseidon2PermutationFields(seedTuple);
+  let state = BigInt(seed);
   for (let index = 0; index < count - 1; index += 1) {
-    if (remaining > 0n) {
-      shares.push(0n);
-    } else {
-      shares.push(0n);
-    }
+    const [nextShare] = await poseidon2PermutationFields([state, BigInt(index + 1), total, remaining]);
+    const share = BigInt(nextShare);
+    shares.push(share);
+    remaining = modField(remaining + FIELD_MODULUS - share);
+    state = share;
   }
   shares.push(remaining);
   return shares;
@@ -243,8 +255,18 @@ async function generateTallyUpdateProof(side, salt, commitmentHex, previousTally
   ];
   const [nextTallyCommitment] = await poseidon2PermutationFields(nextTallyCommitmentInputs);
 
-  const yesShares = side === "YES" ? deterministicShares(amountStroops, 5) : Array(5).fill(0n);
-  const noShares = side === "NO" ? deterministicShares(amountStroops, 5) : Array(5).fill(0n);
+  const yesShares = await additiveShares(side === "YES" ? amountStroops : 0n, 5, [
+    marketField(),
+    BigInt(commitmentHex),
+    side === "YES" ? 1n : 0n,
+    amountStroops,
+  ]);
+  const noShares = await additiveShares(side === "NO" ? amountStroops : 0n, 5, [
+    marketField(),
+    BigInt(commitmentHex),
+    side === "NO" ? 1n : 0n,
+    amountStroops,
+  ]);
   const shareSalts = Array.from({ length: 5 }, () => randomFieldSalt());
   let shareCommitmentRoot = 0n;
   const sharePackets = [];

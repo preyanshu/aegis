@@ -15,7 +15,7 @@
   "commitment": "0x2ae61645616cffd3ee2ca8a0f2e424121946a521276eae6e378cd438744749d6",
   "nullifier": "0x243b77e71ecfc0074ca6e0218d6fe0a05d87bd03b66197e3ea7a86395d91e01b",
   "nextTallyCommitment": "0x23420e21750e8a198f5938af50187d47b1321daa9df8e12ce63e3ab0636a237d",
-  "shareCommitmentRoot": "0x0b5e5bdaf4eda91be183894dbd4437835351b4bdaec6c38841c476fe15483356",
+  "shareCommitmentRoot": "0x298f438da3cdde80377374bd7663011a62e85e1e9297a8359a542adcb949cc2e",
   "noCommitment": "0x2ed2d1e32b6e59d831eb121f7a33e37cd397bcfefcf652942ec9e4a8f68f33e1",
   "noNullifier": "0x2e1285264e00cdddc38bbd1f6b427015e46c997ddf8272f3b8889e3aa7294e1d",
   "noNextTallyCommitment": "0x1ebc888f3d7f2d1cae0e0dc9db4c781bb664d7972d09436f8db13f8147f25c93"
