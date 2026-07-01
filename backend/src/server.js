@@ -3,7 +3,8 @@ import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
 import mongoose from "mongoose";
-import { loadEnv } from "../../scripts/env.js";
+import { randomBytes } from "node:crypto";
+import { loadEnv } from "./env.js";
 import {
   Address,
   BASE_FEE,
@@ -21,6 +22,7 @@ loadEnv({ preserve: ["PORT", "MONGODB_URI", "CORS_ORIGIN", "MARKET_CONTRACT_ID"]
 const PORT = Number(process.env.PORT ?? 4001);
 const MONGODB_URI = process.env.MONGODB_URI ?? "mongodb://127.0.0.1:27017/verdict";
 const CORS_ORIGIN = process.env.CORS_ORIGIN ?? "*";
+const FINALIZE_CRON_MS = Number(process.env.FINALIZE_CRON_MS ?? 30000);
 const SHARD_COUNT = 5;
 const SHARD_THRESHOLD = 3;
 const FIELD_MODULUS = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001n;
@@ -69,9 +71,13 @@ const vaultEntrySchema = new mongoose.Schema(
 const credentialSchema = new mongoose.Schema(
   {
     serialized: { type: String, required: true },
-    isValid: { type: Boolean, required: true },
     proofHex: { type: String, required: true },
     publicInputsHex: { type: [String], default: [] },
+    snapshotRoot: { type: String, required: true },
+    attestorKeyId: { type: String, required: true },
+    proofValid: { type: Boolean, required: true },
+    snapshotVerified: { type: Boolean, required: true },
+    archivedAt: { type: Number, default: null },
     publicClaim: { type: mongoose.Schema.Types.Mixed, required: true },
     createdAt: { type: Number, required: true },
     claim: { type: mongoose.Schema.Types.Mixed, required: true },
@@ -84,12 +90,27 @@ const vaultSchema = new mongoose.Schema(
     walletAddress: { type: String, required: true, unique: true, index: true, trim: true },
     syncMode: { type: String, default: "server", trim: true, maxlength: 16 },
     positions: { type: [vaultEntrySchema], default: [] },
+    attestedRecords: { type: [mongoose.Schema.Types.Mixed], default: [] },
     achievements: { type: [credentialSchema], default: [] },
     updatedAt: { type: Number, default: Date.now },
   },
 );
 
 const ReputationVault = mongoose.model("ReputationVault", vaultSchema);
+
+const reputationShareSchema = new mongoose.Schema(
+  {
+    walletAddress: { type: String, required: true, index: true, trim: true },
+    slug: { type: String, required: true, unique: true, index: true, trim: true },
+    version: { type: Number, required: true, min: 1 },
+    snapshot: { type: mongoose.Schema.Types.Mixed, required: true },
+    createdAt: { type: Number, default: Date.now },
+    updatedAt: { type: Number, default: Date.now },
+  },
+  { timestamps: false },
+);
+reputationShareSchema.index({ walletAddress: 1, version: 1 }, { unique: true });
+const ReputationShare = mongoose.model("ReputationShare", reputationShareSchema);
 
 const tallyShareSchema = new mongoose.Schema(
   {
@@ -109,6 +130,28 @@ const tallyShareSchema = new mongoose.Schema(
 );
 tallyShareSchema.index({ marketId: 1, commitment: 1, shardIndex: 1 }, { unique: true });
 const TallyShare = mongoose.model("TallyShare", tallyShareSchema);
+
+const attestedRecordSchema = new mongoose.Schema(
+  {
+    walletAddress: { type: String, required: true, index: true, trim: true },
+    marketId: { type: String, required: true, trim: true },
+    category: { type: String, required: true, trim: true },
+    claimedAt: { type: Number, required: true },
+    resolvedAt: { type: Number, required: true },
+    recordCommitment: { type: String, required: true, trim: true },
+    attestorSignature: { type: String, required: true, trim: true },
+    attestorKeyId: { type: String, required: true, trim: true },
+    claimTxHash: { type: String, required: true, trim: true },
+    positionCommitment: { type: String, required: true, trim: true },
+    claimNullifier: { type: String, required: true, trim: true },
+  },
+  { timestamps: true },
+);
+attestedRecordSchema.index(
+  { walletAddress: 1, marketId: 1, positionCommitment: 1, claimTxHash: 1 },
+  { unique: true },
+);
+const AttestedReputationRecord = mongoose.model("AttestedReputationRecord", attestedRecordSchema);
 
 const finalizationJobSchema = new mongoose.Schema(
   {
@@ -135,6 +178,10 @@ app.use(
 
 function normalizeWalletAddress(value) {
   return String(value ?? "").trim();
+}
+
+function normalizeCategory(value) {
+  return String(value ?? "").trim().toLowerCase();
 }
 
 function normalizeHex(value) {
@@ -215,6 +262,10 @@ function bytesToHex(bytes) {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+function padHex32(value) {
+  return `0x${value.toString(16).padStart(64, "0")}`;
+}
+
 function asBigInt(value) {
   if (typeof value === "bigint") return value;
   if (typeof value === "number") return BigInt(value);
@@ -226,6 +277,75 @@ function asBigInt(value) {
 function modField(value) {
   const normalized = value % FIELD_MODULUS;
   return normalized >= 0n ? normalized : normalized + FIELD_MODULUS;
+}
+
+function stringToField(value) {
+  let acc = 0n;
+  for (let index = 0; index < value.length; index += 1) {
+    acc = ((acc * 257n) + BigInt(value.charCodeAt(index))) & ((1n << 248n) - 1n);
+  }
+  return acc;
+}
+
+function marketIdToField(marketId) {
+  return BigInt(normalizeHex(marketId)) & ((1n << 248n) - 1n);
+}
+
+function combineFieldLike(inputs) {
+  let acc = 0n;
+  for (const input of inputs) {
+    acc = ((acc * 1315423911n) + (BigInt(input) & ((1n << 248n) - 1n))) & ((1n << 248n) - 1n);
+  }
+  return acc;
+}
+
+function computeRecordCommitment(input) {
+  return padHex32(combineFieldLike([
+    stringToField(input.walletAddress.toLowerCase()),
+    marketIdToField(input.marketId),
+    stringToField(input.category.toLowerCase()),
+    BigInt(input.amountInStroops),
+    BigInt(input.payoutInStroops),
+    input.won ? 1n : 0n,
+    BigInt(input.claimedAt),
+    BigInt(input.witnessSalt),
+  ]));
+}
+
+function buildAttestationMessage(record) {
+  return [
+    record.walletAddress.trim().toLowerCase(),
+    record.marketId.trim().toLowerCase(),
+    record.category.trim().toLowerCase(),
+    String(record.claimedAt),
+    String(record.resolvedAt),
+    record.recordCommitment.trim().toLowerCase(),
+  ].join("|");
+}
+
+function attestorKeypair() {
+  const secret = process.env.REPUTATION_ATTESTOR_SECRET_KEY
+    ?? process.env.FINALIZER_SECRET_KEY
+    ?? process.env.ADMIN_SECRET_KEY;
+  if (!secret) {
+    throw new Error("reputation attestor secret key is not configured");
+  }
+  return Keypair.fromSecret(secret);
+}
+
+function signAttestedRecord(record) {
+  const signer = attestorKeypair();
+  return {
+    attestorSignature: `0x${bytesToHex(signer.sign(Buffer.from(buildAttestationMessage(record), "utf8")))}`,
+    attestorKeyId: signer.publicKey(),
+  };
+}
+
+async function getTransactionResult(hash) {
+  const cfg = stellarConfig();
+  if (!cfg) throw new Error("stellar finalizer env is not configured");
+  const server = new rpc.Server(cfg.rpcUrl);
+  return server.getTransaction(hash);
 }
 
 async function readContract(method, args = []) {
@@ -257,7 +377,30 @@ async function loadMarketIds() {
 }
 
 async function loadMarketState(marketId) {
-  return readContract("get_market_state", [bytes32ScVal(marketId)]);
+  try {
+    return await readContract("get_market_state", [bytes32ScVal(marketId)]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`market lookup failed for ${marketId}: ${message}`);
+  }
+}
+
+async function loadMarketConfig(marketId) {
+  try {
+    return await readContract("get_market_config", [bytes32ScVal(marketId)]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`market config lookup failed for ${marketId}: ${message}`);
+  }
+}
+
+async function loadCommitmentRecord(marketId, commitment) {
+  try {
+    return await readContract("get_commitment_record", [bytes32ScVal(marketId), bytes32ScVal(commitment)]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`commitment lookup failed for ${marketId}/${commitment}: ${message}`);
+  }
 }
 
 async function submitFinalize(marketId, aggregate) {
@@ -375,8 +518,59 @@ function serializeVault(vault) {
     walletAddress: vault.walletAddress,
     syncMode: vault.syncMode ?? "server",
     positions: Array.isArray(vault.positions) ? vault.positions : [],
+    attestedRecords: Array.isArray(vault.attestedRecords) ? vault.attestedRecords : [],
     achievements: Array.isArray(vault.achievements) ? vault.achievements : [],
     updatedAt: typeof vault.updatedAt === "number" ? vault.updatedAt : Date.now(),
+  };
+}
+
+function serializeShareSnapshot(share) {
+  const snapshot = share.snapshot ?? {};
+  return {
+    walletAddress: share.walletAddress,
+    slug: share.slug,
+    version: share.version,
+    shareUrl: `/reputation/share/${share.slug}`,
+    snapshot: {
+      profile: snapshot.profile ?? {
+        displayName: "",
+        bio: "",
+        avatarDataUrl: null,
+      },
+      summary: snapshot.summary ?? {
+        totalMarkets: Array.isArray(snapshot.positions)
+          ? new Set(snapshot.positions.map((position) => position.marketId)).size
+          : 0,
+        totalCollateralInStroops: Array.isArray(snapshot.positions)
+          ? snapshot.positions.reduce((sum, position) => sum + BigInt(position.amountInStroops ?? "0"), 0n).toString()
+          : "0",
+        totalCategories: Array.isArray(snapshot.positions)
+          ? new Set(snapshot.positions.map((position) => String(position.category ?? "").toLowerCase()).filter(Boolean)).size
+          : 0,
+        categories: Array.isArray(snapshot.positions)
+          ? [...new Set(snapshot.positions.map((position) => String(position.category ?? "").toLowerCase()).filter(Boolean))].slice(0, 4)
+          : [],
+      },
+      attestedRecords: Array.isArray(snapshot.attestedRecords) ? snapshot.attestedRecords : [],
+      achievements: Array.isArray(snapshot.achievements) ? snapshot.achievements : [],
+      positions: Array.isArray(snapshot.positions) ? snapshot.positions : [],
+    },
+    createdAt: typeof share.createdAt === "number" ? share.createdAt : Date.now(),
+    updatedAt: typeof share.updatedAt === "number" ? share.updatedAt : Date.now(),
+  };
+}
+
+function serializeAttestedRecord(record) {
+  return {
+    walletAddress: record.walletAddress,
+    marketId: record.marketId,
+    category: record.category,
+    claimedAt: record.claimedAt,
+    resolvedAt: record.resolvedAt,
+    recordCommitment: record.recordCommitment,
+    attestorSignature: record.attestorSignature,
+    attestorKeyId: record.attestorKeyId,
+    claimTxHash: record.claimTxHash,
   };
 }
 
@@ -462,6 +656,7 @@ app.post("/vault/upsert", async (req, res) => {
   const walletAddress = normalizeWalletAddress(req.body?.walletAddress);
   const syncMode = String(req.body?.syncMode ?? "server").trim() === "local" ? "local" : "server";
   const positions = Array.isArray(req.body?.positions) ? req.body.positions : [];
+  const attestedRecords = Array.isArray(req.body?.attestedRecords) ? req.body.attestedRecords : [];
   const achievements = Array.isArray(req.body?.achievements) ? req.body.achievements : [];
 
   if (!walletAddress) {
@@ -475,6 +670,7 @@ app.post("/vault/upsert", async (req, res) => {
         walletAddress,
         syncMode,
         positions,
+        attestedRecords,
         achievements,
         updatedAt: Date.now(),
       },
@@ -488,6 +684,223 @@ app.post("/vault/upsert", async (req, res) => {
   );
 
   return res.json({ vault: serializeVault(vault) });
+});
+
+app.post("/reputation-shares", async (req, res) => {
+  try {
+    const walletAddress = normalizeWalletAddress(req.body?.walletAddress);
+    const snapshot = req.body?.snapshot ?? {};
+
+    if (!walletAddress) {
+      return res.status(400).json({ error: "walletAddress is required" });
+    }
+
+    const latest = await ReputationShare.findOne({ walletAddress }).sort({ version: -1, createdAt: -1 }).lean();
+    const nextVersion = Number(latest?.version ?? 0) + 1;
+    const slug = `rep-${nextVersion.toString(36)}-${randomBytes(4).toString("hex")}`;
+    const createdAt = Date.now();
+
+    const share = await ReputationShare.create({
+      walletAddress,
+      slug,
+      version: nextVersion,
+      snapshot: {
+        profile: snapshot.profile ?? {
+          displayName: "",
+          bio: "",
+          avatarDataUrl: null,
+        },
+        summary: snapshot.summary ?? {
+          totalMarkets: 0,
+          totalCollateralInStroops: "0",
+          totalCategories: 0,
+          categories: [],
+        },
+        attestedRecords: Array.isArray(snapshot.attestedRecords) ? snapshot.attestedRecords : [],
+        achievements: Array.isArray(snapshot.achievements)
+          ? snapshot.achievements.filter((achievement) => !achievement?.archivedAt)
+          : [],
+      },
+      createdAt,
+      updatedAt: createdAt,
+    });
+
+    return res.status(201).json({ share: serializeShareSnapshot(share) });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const duplicate = message.includes("duplicate key");
+    return res.status(duplicate ? 409 : 400).json({ error: duplicate ? "duplicate share snapshot" : message });
+  }
+});
+
+app.get("/reputation-shares/:slug", async (req, res) => {
+  const slug = String(req.params.slug ?? "").trim();
+  if (!slug) {
+    return res.status(400).json({ error: "slug is required" });
+  }
+
+  const share = await ReputationShare.findOne({ slug }).lean();
+  if (!share) {
+    return res.status(404).json({ share: null });
+  }
+
+  return res.json({ share: serializeShareSnapshot(share) });
+});
+
+app.post("/reputation/attest-claim", async (req, res) => {
+  try {
+    const walletAddress = normalizeWalletAddress(req.body?.walletAddress);
+    const marketId = normalizeHex(req.body?.marketId);
+    const commitment = normalizeHex(req.body?.commitment);
+    const nullifier = normalizeHex(req.body?.nullifier);
+    const claimTxHash = String(req.body?.claimTxHash ?? "").trim();
+    const category = normalizeCategory(req.body?.category);
+    const recordCommitment = normalizeHex(req.body?.recordCommitment);
+    const witnessSalt = normalizeHex(req.body?.witnessSalt);
+    const claimedAtHint = Number(req.body?.claimedAt ?? 0);
+
+    if (!walletAddress || !marketId || !commitment || !nullifier || !claimTxHash || !category || !recordCommitment || !witnessSalt) {
+      return res.status(400).json({ error: "walletAddress, marketId, commitment, nullifier, claimTxHash, category, recordCommitment, and witnessSalt are required" });
+    }
+
+    const existing = await AttestedReputationRecord.findOne({
+      walletAddress,
+      marketId,
+      positionCommitment: commitment,
+      claimTxHash,
+    }).lean();
+    if (existing) {
+      return res.json({ record: serializeAttestedRecord(existing) });
+    }
+
+    const tx = await getTransactionResult(claimTxHash);
+    if (tx.status !== rpc.Api.GetTransactionStatus.SUCCESS && tx.status !== "SUCCESS") {
+      return res.status(400).json({ error: "claim transaction did not succeed" });
+    }
+
+    let marketState;
+    try {
+      marketState = await loadMarketState(marketId);
+    } catch (error) {
+      return res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+        hint: "Verify that MARKET_CONTRACT_ID points to the same network where the market was created and that this marketId exists on-chain.",
+      });
+    }
+    if (!Boolean(marketState.resolved) || !Boolean(marketState.claims_finalized)) {
+      return res.status(400).json({ error: "market is not claim-ready" });
+    }
+
+    let marketConfig;
+    try {
+      marketConfig = await loadMarketConfig(marketId);
+    } catch (error) {
+      return res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+        hint: "The backend can reach the contract, but this market config is missing on-chain.",
+      });
+    }
+
+    let commitmentRecord;
+    try {
+      commitmentRecord = await loadCommitmentRecord(marketId, commitment);
+    } catch (error) {
+      return res.status(400).json({
+        error: error instanceof Error ? error.message : String(error),
+        hint: "The claim commitment was not found in the on-chain market state. Double-check that you claimed this exact market on the same network.",
+      });
+    }
+    if (!commitmentRecord) {
+      return res.status(404).json({ error: "commitment not found" });
+    }
+
+    if (String(commitmentRecord.owner ?? "").trim() !== walletAddress) {
+      return res.status(400).json({ error: "commitment owner does not match walletAddress" });
+    }
+
+    if (!Boolean(commitmentRecord.claimed)) {
+      return res.status(400).json({ error: "commitment has not been claimed on-chain" });
+    }
+
+    const canonicalCategory = normalizeCategory(marketConfig.category);
+    if (canonicalCategory !== category) {
+      return res.status(400).json({ error: "category mismatch" });
+    }
+
+    const payoutInStroops = (
+      BigInt(commitmentRecord.collateral_amount ?? 0)
+      * BigInt(marketState.distributable_pot ?? 0)
+    ) / BigInt(marketState.winning_side_total ?? 1);
+    const txCreatedAtSeconds = tx.createdAt
+      ? Math.floor(new Date(tx.createdAt).getTime() / 1000)
+      : NaN;
+    const claimedAt = Number.isFinite(txCreatedAtSeconds) && txCreatedAtSeconds > 0
+      ? txCreatedAtSeconds
+      : claimedAtHint > 0
+        ? Math.floor(claimedAtHint / 1000)
+        : Math.floor(Date.now() / 1000);
+    const resolvedAt = Number(BigInt(marketState.settled_at ?? 0));
+    const expectedRecordCommitment = computeRecordCommitment({
+      walletAddress,
+      marketId,
+      category,
+      amountInStroops: BigInt(commitmentRecord.collateral_amount ?? 0),
+      payoutInStroops,
+      won: payoutInStroops > 0n,
+      claimedAt,
+      witnessSalt: BigInt(witnessSalt),
+    });
+
+    if (expectedRecordCommitment !== recordCommitment) {
+      return res.status(400).json({ error: "record commitment does not match attested claim facts" });
+    }
+
+    const signedFields = signAttestedRecord({
+      walletAddress,
+      marketId,
+      category,
+      claimedAt,
+      resolvedAt,
+      recordCommitment,
+    });
+    const saved = await AttestedReputationRecord.create({
+      walletAddress,
+      marketId,
+      category,
+      claimedAt,
+      resolvedAt,
+      recordCommitment,
+      claimTxHash,
+      positionCommitment: commitment,
+      claimNullifier: nullifier,
+      ...signedFields,
+    });
+
+    await ReputationVault.findOneAndUpdate(
+      { walletAddress },
+      {
+        $set: { updatedAt: Date.now() },
+        $addToSet: { attestedRecords: serializeAttestedRecord(saved) },
+      },
+      { upsert: true, new: true },
+    );
+
+    return res.status(201).json({ record: serializeAttestedRecord(saved) });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const duplicate = message.includes("duplicate key");
+    return res.status(duplicate ? 409 : 400).json({ error: duplicate ? "duplicate claim attestation" : message });
+  }
+});
+
+app.get("/reputation-records/:walletAddress", async (req, res) => {
+  const walletAddress = normalizeWalletAddress(req.params.walletAddress);
+  if (!walletAddress) {
+    return res.status(400).json({ error: "walletAddress is required" });
+  }
+
+  const records = await AttestedReputationRecord.find({ walletAddress }).sort({ claimedAt: -1, createdAt: -1 }).lean();
+  return res.json({ records: records.map(serializeAttestedRecord) });
 });
 
 app.post("/tally-shares", async (req, res) => {
@@ -556,50 +969,79 @@ app.post("/jobs/resolve-due-markets", async (_req, res) => {
   });
 });
 
-app.post("/jobs/finalize-due-markets", async (_req, res) => {
-  try {
-    const ids = await loadMarketIds();
-    const results = [];
-    const now = Math.floor(Date.now() / 1000);
-    for (const marketId of ids) {
-      const state = await loadMarketState(marketId);
-      if (Boolean(state.resolved) || Boolean(state.tally_finalized)) continue;
-      const deadline = Number(asBigInt(state.tally_deadline ?? 0));
-      if (!deadline || now < deadline) continue;
+let finalizeLoopActive = false;
 
+async function finalizeDueMarkets() {
+  const ids = await loadMarketIds();
+  const results = [];
+  const now = Math.floor(Date.now() / 1000);
+
+  for (const marketId of ids) {
+    const state = await loadMarketState(marketId);
+    if (Boolean(state.resolved) || Boolean(state.tally_finalized)) continue;
+    const deadline = Number(asBigInt(state.tally_deadline ?? 0));
+    if (!deadline || now < deadline) continue;
+
+    await FinalizationJob.findOneAndUpdate(
+      { marketId },
+      { $set: { marketId, status: "finalizing", error: null, updatedAt: Date.now() } },
+      { upsert: true },
+    );
+
+    try {
+      const aggregate = await aggregateMarketShares(marketId);
+      if (aggregate.talliedCommitmentCount === 0) {
+        await FinalizationJob.findOneAndUpdate(
+          { marketId },
+          { $set: { status: "skipped_no_complete_tallies", error: null, updatedAt: Date.now() } },
+          { upsert: true },
+        );
+        results.push({ marketId, status: "skipped_no_complete_tallies" });
+        continue;
+      }
+
+      const txHash = await submitFinalize(marketId, aggregate);
       await FinalizationJob.findOneAndUpdate(
         { marketId },
-        { $set: { marketId, status: "finalizing", error: null, updatedAt: Date.now() } },
+        { $set: { status: "finalized", txHash, error: null, updatedAt: Date.now() } },
         { upsert: true },
       );
-      try {
-        const aggregate = await aggregateMarketShares(marketId);
-        if (aggregate.talliedCommitmentCount === 0) {
-          await FinalizationJob.findOneAndUpdate(
-            { marketId },
-            { $set: { status: "skipped_no_complete_tallies", error: null, updatedAt: Date.now() } },
-            { upsert: true },
-          );
-          results.push({ marketId, status: "skipped_no_complete_tallies" });
-          continue;
-        }
-        const txHash = await submitFinalize(marketId, aggregate);
-        await FinalizationJob.findOneAndUpdate(
-          { marketId },
-          { $set: { status: "finalized", txHash, error: null, updatedAt: Date.now() } },
-          { upsert: true },
-        );
-        results.push({ marketId, status: "finalized", txHash });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        await FinalizationJob.findOneAndUpdate(
-          { marketId },
-          { $set: { status: "error", error: message, updatedAt: Date.now() } },
-          { upsert: true },
-        );
-        results.push({ marketId, status: "error", error: message });
-      }
+      results.push({ marketId, status: "finalized", txHash });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await FinalizationJob.findOneAndUpdate(
+        { marketId },
+        { $set: { status: "error", error: message, updatedAt: Date.now() } },
+        { upsert: true },
+      );
+      results.push({ marketId, status: "error", error: message });
     }
+  }
+
+  return results;
+}
+
+async function runFinalizeCronTick() {
+  if (finalizeLoopActive) {
+    return;
+  }
+
+  finalizeLoopActive = true;
+  try {
+    const results = await finalizeDueMarkets();
+    if (results.length > 0) {
+      console.log("[finalize-cron] processed due markets", JSON.stringify(results));
+    }
+  } catch (error) {
+    console.error("[finalize-cron] failed", error);
+  } finally {
+    finalizeLoopActive = false;
+  }
+}
+
+app.post("/jobs/finalize-due-markets", async (_req, res) => {
+  try {
+    const results = await finalizeDueMarkets();
     return res.json({ ok: true, results });
   } catch (error) {
     return res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -611,6 +1053,8 @@ async function start() {
   app.listen(PORT, () => {
     console.log(`Profile backend listening on http://localhost:${PORT}`);
   });
+  setInterval(runFinalizeCronTick, Math.max(5000, FINALIZE_CRON_MS));
+  void runFinalizeCronTick();
 }
 
 start().catch((error) => {

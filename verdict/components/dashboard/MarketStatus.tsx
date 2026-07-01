@@ -45,7 +45,7 @@ export function MarketStatus({ state, now }: MarketStatusProps) {
             iconColor: "text-white/60",
         },
         {
-            label: "Locked Collateral",
+            label: "Committed Collateral",
             value: formatUsdc(state.totalCommitted),
             icon: Wallet,
             iconColor: "text-white/60",

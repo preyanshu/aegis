@@ -39,11 +39,11 @@ import {
     submitPrivateTallyWithPrivyWallet,
     submitTallySharesToBackend,
 } from "@/lib/stellar";
-import { generateClaimProof, generateCommitProof, generateTallyUpdateProof } from "@/lib/proofs";
+import { computeRecordCommitment, generateClaimProof, generateCommitProof, generateTallyUpdateProof, randomWitnessSalt } from "@/lib/proofs";
 import { formatCompactAddress, formatUsdc, marketStatusLabel, payoutForPosition, positionStatusLabel, stroopsToUsdc } from "@/lib/blind-market";
 import { TRUSTED_DATA_SOURCES } from "@/lib/data-sources";
 import { ensurePrivyStellarWallet, isPrivyStellarWalletLimitError } from "@/lib/privy-stellar-wallet";
-import { loadReputationSnapshot, markClaimedPosition, upsertCommittedPosition } from "@/lib/reputation-vault";
+import { attestClaimRecord, loadReputationSnapshot, markClaimedPosition, upsertAttestedRecord, upsertCommittedPosition, upsertPrivateReputationWitness } from "@/lib/reputation-vault";
 
 interface MarketDetailViewProps {
     market: BlindMarketSummary;
@@ -56,6 +56,27 @@ function formatTimestamp(timestamp: number | null) {
         return "Pending";
     }
     return new Date(timestamp).toLocaleString();
+}
+
+function formatCompactTimestamp(timestamp: number | null) {
+    if (!timestamp) {
+        return "Pending";
+    }
+
+    return new Intl.DateTimeFormat(undefined, {
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+    }).format(new Date(timestamp));
+}
+
+function formatPercentage(value: number) {
+    const normalized = value / 100;
+    if (normalized === 0 || normalized === 1) {
+        return normalized.toString();
+    }
+    return normalized.toFixed(2);
 }
 
 function formatCountdown(targetTimestamp: number, currentTimestamp: number) {
@@ -427,6 +448,12 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
         () => claimablePositions.reduce((sum, position) => sum + payoutForPosition(market, BigInt(position.amountInStroops)), BigInt(0)),
         [claimablePositions, market],
     );
+    const resolvedYesPercentage = market.resolved ? (market.outcome === "YES" ? 100 : 0) : null;
+    const resolvedNoPercentage = market.resolved ? (market.outcome === "NO" ? 100 : 0) : null;
+    const remainingClaimable = useMemo(
+        () => (market.distributablePot > market.totalClaimedOut ? market.distributablePot - market.totalClaimedOut : BigInt(0)),
+        [market.distributablePot, market.totalClaimedOut],
+    );
     const uniqueConditions = useMemo(() => {
         const seen = new Set<string>();
         return market.conditions.filter((condition) => {
@@ -438,6 +465,12 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
             return true;
         });
     }, [market.conditions]);
+    const latestPriceRefreshBucket = Math.floor(now / 15_000);
+    const reflectorHistoryBucket = Math.floor(now / 1000 / 300) * 300;
+    const reflectorRequestKey = useMemo(
+        () => uniqueConditions.map((condition) => `${condition.oracleContract}:${condition.assetSymbol}`).join("|"),
+        [uniqueConditions],
+    );
     const activeSeries = assetSeries.find((entry) => entry.assetSymbol === activeAsset) ?? assetSeries[0];
     const activeCondition = uniqueConditions.find((entry) => entry.assetSymbol === activeSeries?.assetSymbol);
     const heroAsset = TRUSTED_DATA_SOURCES.find((entry) => entry.ticker === uniqueConditions[0]?.assetSymbol);
@@ -536,7 +569,6 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
         void (async () => {
             setChartBusy(true);
             try {
-                const endTimestamp = Math.floor(Date.now() / 1000);
                 const nextSeries = await Promise.all(
                     uniqueConditions.map(async (condition, index) => {
                         const [latest, history] = await Promise.all([
@@ -544,7 +576,8 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
                             loadReflectorPriceHistory(condition.oracleContract, condition.assetSymbol, {
                                 points: 24,
                                 intervalSeconds: 3600,
-                                endTimestamp,
+                                endTimestamp: reflectorHistoryBucket,
+                                cacheBucketSeconds: 300,
                             }),
                         ]);
 
@@ -581,7 +614,7 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
         return () => {
             cancelled = true;
         };
-    }, [uniqueConditions]);
+    }, [latestPriceRefreshBucket, reflectorHistoryBucket, reflectorRequestKey, uniqueConditions]);
 
     function handleSetMaxCommitAmount() {
         const maxAllowed = usdcBalance < market.maxBet ? usdcBalance : market.maxBet;
@@ -863,13 +896,80 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
             const claimedAt = Date.now();
             setSavedPositions((current) => current.map((entry) => (
                 entry.commitment === position.commitment
-                    ? { ...entry, claimTxHash: tx.hash, claimedAt }
+                    ? { ...entry, claimTxHash: tx.hash, claimedAt, reputationAttestationStatus: "pending" }
                     : entry
             )));
             await markClaimedPosition(walletPublic, position.commitment, {
                 claimTxHash: tx.hash,
                 claimedAt,
+                reputationAttestationStatus: "pending",
             });
+
+            const payoutInStroops = payoutForPosition(market, BigInt(position.amountInStroops));
+            const witnessSalt = randomWitnessSalt();
+            const recordCommitment = await computeRecordCommitment({
+                walletAddress: walletPublic,
+                marketId: market.marketId,
+                category: market.category,
+                amountInStroops: BigInt(position.amountInStroops),
+                payoutInStroops,
+                won: payoutInStroops > 0n,
+                claimedAt: Math.floor(claimedAt / 1000),
+                witnessSalt,
+            });
+            await upsertPrivateReputationWitness(walletPublic, {
+                marketId: market.marketId,
+                commitment: position.commitment,
+                nullifier: position.nullifier,
+                side: position.side,
+                amountInStroops: position.amountInStroops,
+                payoutInStroops: payoutInStroops.toString(),
+                won: payoutInStroops > 0n,
+                claimedAt: Math.floor(claimedAt / 1000),
+                resolvedAt: market.settledAt ? Math.floor(market.settledAt / 1000) : 0,
+                category: market.category.toLowerCase(),
+                witnessSalt,
+                recordCommitment,
+            });
+
+            try {
+                const attestedRecord = await attestClaimRecord({
+                    walletAddress: walletPublic,
+                    marketId: market.marketId,
+                    commitment: position.commitment,
+                    nullifier: position.nullifier,
+                    claimTxHash: tx.hash,
+                    category: market.category,
+                    recordCommitment,
+                    witnessSalt,
+                    claimedAt,
+                });
+                await upsertAttestedRecord(walletPublic, attestedRecord);
+                await upsertPrivateReputationWitness(walletPublic, {
+                    marketId: market.marketId,
+                    commitment: position.commitment,
+                    nullifier: position.nullifier,
+                    side: position.side,
+                    amountInStroops: position.amountInStroops,
+                    payoutInStroops: payoutInStroops.toString(),
+                    won: payoutInStroops > 0n,
+                    claimedAt: attestedRecord.claimedAt,
+                    resolvedAt: attestedRecord.resolvedAt,
+                    category: market.category.toLowerCase(),
+                    witnessSalt,
+                    recordCommitment,
+                });
+                setSavedPositions((current) => current.map((entry) => (
+                    entry.commitment === position.commitment
+                        ? { ...entry, reputationAttestationStatus: "attested" }
+                        : entry
+                )));
+                await markClaimedPosition(walletPublic, position.commitment, {
+                    reputationAttestationStatus: "attested",
+                });
+            } catch (attestationError) {
+                console.error("Claim attestation failed:", attestationError);
+            }
 
             await refreshAfterMutation(`Claimed ${formatUsdc(proof.payout)} from the market pot.`);
         } catch (claimError) {
@@ -934,19 +1034,35 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
                     <div className="grid grid-cols-2 gap-3 sm:gap-4 shrink-0">
                         <div className="px-4 sm:px-6 py-3 sm:py-4 rounded-2xl bg-violet-500/10 border border-violet-500/20 text-center">
                             <p className="text-[9px] sm:text-[10px] text-violet-300 font-bold uppercase tracking-[0.2em] mb-1">YES Side</p>
-                            <div className="flex items-center justify-center pt-1">
-                                <div className="flex h-8 w-8 items-center justify-center rounded-full border border-violet-400/20 bg-violet-400/10">
-                                    <LockKeyhole className="h-3.5 w-3.5 text-violet-200/80" />
+                            {market.resolved ? (
+                                <div className="pt-1">
+                                    <p className={`text-lg font-black tracking-tight ${market.outcome === "YES" ? "text-emerald-200" : "text-white"}`}>
+                                        {formatPercentage(resolvedYesPercentage ?? 0)}
+                                    </p>
                                 </div>
-                            </div>
+                            ) : (
+                                <div className="flex items-center justify-center pt-1">
+                                    <div className="flex h-8 w-8 items-center justify-center rounded-full border border-violet-400/20 bg-violet-400/10">
+                                        <LockKeyhole className="h-3.5 w-3.5 text-violet-200/80" />
+                                    </div>
+                                </div>
+                            )}
                         </div>
                         <div className="px-4 sm:px-6 py-3 sm:py-4 rounded-2xl bg-violet-500/10 border border-violet-500/20 text-center">
                             <p className="text-[9px] sm:text-[10px] text-violet-300 font-bold uppercase tracking-[0.2em] mb-1">NO Side</p>
-                            <div className="flex items-center justify-center pt-1">
-                                <div className="flex h-8 w-8 items-center justify-center rounded-full border border-violet-400/20 bg-violet-400/10">
-                                    <LockKeyhole className="h-3.5 w-3.5 text-violet-200/80" />
+                            {market.resolved ? (
+                                <div className="pt-1">
+                                    <p className={`text-lg font-black tracking-tight ${market.outcome === "NO" ? "text-red-200" : "text-white"}`}>
+                                        {formatPercentage(resolvedNoPercentage ?? 0)}
+                                    </p>
                                 </div>
-                            </div>
+                            ) : (
+                                <div className="flex items-center justify-center pt-1">
+                                    <div className="flex h-8 w-8 items-center justify-center rounded-full border border-violet-400/20 bg-violet-400/10">
+                                        <LockKeyhole className="h-3.5 w-3.5 text-violet-200/80" />
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     </div>
                 </div>
@@ -977,7 +1093,7 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
                             </div>
                         </div>
 
-                        {chartBusy ? (
+                        {chartBusy && assetSeries.length === 0 ? (
                             <div className="flex h-[300px] sm:h-[400px] items-center justify-center">
                                 <div className="flex items-center gap-3 text-white/50">
                                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -985,11 +1101,19 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
                                 </div>
                             </div>
                         ) : assetSeries.length > 0 ? (
-                            <ReflectorChart
-                                series={assetSeries}
-                                activeAsset={activeAsset}
-                                thresholdValue={activeThresholdValue}
-                            />
+                            <div className="relative">
+                                {chartBusy ? (
+                                    <div className="pointer-events-none absolute right-3 top-3 z-10 inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/45 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.18em] text-white/70 backdrop-blur-sm">
+                                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                        Refreshing
+                                    </div>
+                                ) : null}
+                                <ReflectorChart
+                                    series={assetSeries}
+                                    activeAsset={activeAsset}
+                                    thresholdValue={activeThresholdValue}
+                                />
+                            </div>
                         ) : (
                             <div className="flex h-[300px] sm:h-[400px] items-center justify-center text-sm text-white/45">
                                 No Reflector history available for the assets in this market yet.
@@ -998,20 +1122,20 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
 
                         <div className="grid grid-cols-2 gap-4 mt-8 border-t border-white/5 pt-8 sm:grid-cols-4">
                             <div>
-                                <p className="text-[10px] font-bold text-white/20 uppercase tracking-[0.2em] mb-2">Total Collateral</p>
+                                <p className="text-[10px] font-bold text-white/20 uppercase tracking-[0.2em] mb-2">Total Committed</p>
                                 <p className="text-lg font-black text-white sm:text-xl">{formatUsdc(market.totalLockedCollateral)}</p>
                             </div>
                             <div>
-                                <p className="text-[10px] font-bold text-white/20 uppercase tracking-[0.2em] mb-2">Your Collateral</p>
+                                <p className="text-[10px] font-bold text-white/20 uppercase tracking-[0.2em] mb-2">Your Committed</p>
                                 <p className="text-lg font-black text-violet-300 sm:text-xl">{formatUsdc(walletCommittedCollateral)}</p>
                             </div>
                             <div>
-                                <p className="text-[10px] font-bold text-white/20 uppercase tracking-[0.2em] mb-2">Total Commitments</p>
-                                <p className="text-lg font-black text-white sm:text-xl">{market.commitmentCount}</p>
+                                <p className="text-[10px] font-bold text-white/20 uppercase tracking-[0.2em] mb-2">{market.resolved ? "Claimed Out" : "Total Commitments"}</p>
+                                <p className="text-lg font-black text-white sm:text-xl">{market.resolved ? formatUsdc(market.totalClaimedOut) : market.commitmentCount}</p>
                             </div>
                             <div>
-                                <p className="text-[10px] font-bold text-white/20 uppercase tracking-[0.2em] mb-2">Your Commitments</p>
-                                <p className="text-lg font-black text-white sm:text-xl">{walletPositions.length}</p>
+                                <p className="text-[10px] font-bold text-white/20 uppercase tracking-[0.2em] mb-2">{market.resolved ? "Remaining Claimable" : "Your Commitments"}</p>
+                                <p className="text-lg font-black text-white sm:text-xl">{market.resolved ? formatUsdc(remainingClaimable) : walletPositions.length}</p>
                             </div>
                         </div>
                     </div>
@@ -1106,48 +1230,49 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
 
                             <div className="rounded-2xl border border-white/5 bg-white/[0.03] p-5 sm:p-6">
                                 <div className="flex items-center gap-3 mb-4">
-                                    <Shield className="w-5 h-5 text-white/60" />
+                                    <Shield className="w-5 h-5 text-violet-200/80" />
                                     <h3 className="text-lg font-bold text-white">Settlement Window</h3>
                                 </div>
-                                <p className="mb-5 text-sm leading-relaxed text-white/45">
-                                    Commitments stay private through expiry, then each position is tallied locally before the final aggregate can be proven on-chain.
+                                <p className="mb-5 text-sm leading-relaxed text-white/42">
+                                    Commitments stay private through expiry, then each position is tallied before the final aggregate can be proven on-chain.
                                 </p>
-                                <div className="grid grid-cols-2 gap-3 mb-5 text-xs">
-                                    <div className="rounded-2xl border border-white/5 bg-black/15 p-3">
-                                        <p className="text-[9px] uppercase tracking-[0.22em] text-white/25 font-black">Expiry</p>
-                                        <p className="mt-1 font-bold text-white">{formatTimestamp(market.endTimestamp)}</p>
-                                    </div>
-                                    <div className="rounded-2xl border border-white/5 bg-black/15 p-3">
-                                        <p className="text-[9px] uppercase tracking-[0.22em] text-white/25 font-black">Tally Deadline</p>
-                                        <p className="mt-1 font-bold text-white">{formatTimestamp(market.tallyDeadline)}</p>
-                                    </div>
-                                    <div className="rounded-2xl border border-white/5 bg-black/15 p-3">
-                                        <p className="text-[9px] uppercase tracking-[0.22em] text-white/25 font-black">Tallied</p>
-                                        <p className="mt-1 font-bold text-white">{market.talliedCount}</p>
-                                    </div>
-                                    <div className="rounded-2xl border border-white/5 bg-black/15 p-3">
-                                        <p className="text-[9px] uppercase tracking-[0.22em] text-white/25 font-black">Lifecycle</p>
-                                        <p className="mt-1 font-bold text-white">
-                                            {market.resolved ? "Resolved" : marketReadyToFinalize ? "Ready to Finalize" : marketNeedsTally ? "Needs Tally" : "Open"}
-                                        </p>
+                                <div className="rounded-2xl border border-white/5 bg-black/15 px-4 py-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+                                    <div className="grid grid-cols-2 gap-x-5 gap-y-4">
+                                        <div className="space-y-1">
+                                            <p className="text-[10px] font-black uppercase tracking-[0.22em] text-violet-200/38">Expiry</p>
+                                            <p className="text-sm font-semibold text-white/88">{formatCompactTimestamp(market.endTimestamp)}</p>
+                                        </div>
+                                        <div className="space-y-1">
+                                            <p className="text-[10px] font-black uppercase tracking-[0.22em] text-violet-200/38">Tally Deadline</p>
+                                            <p className="text-sm font-semibold text-white/88">{formatCompactTimestamp(market.tallyDeadline)}</p>
+                                        </div>
+                                        <div className="space-y-1">
+                                            <p className="text-[10px] font-black uppercase tracking-[0.22em] text-violet-200/38">Tallied</p>
+                                            <p className="text-sm font-semibold text-white/88">{market.talliedCount}</p>
+                                        </div>
+                                        <div className="space-y-1">
+                                            <p className="text-[10px] font-black uppercase tracking-[0.22em] text-violet-200/38">Lifecycle</p>
+                                            <p className="text-sm font-semibold text-white/88">{marketStatusLabel(market)}</p>
+                                        </div>
                                     </div>
                                 </div>
-                                <div>
-                                    <div className="flex items-center justify-between gap-3 mb-4">
-                                        <p className="text-[10px] font-black uppercase tracking-[0.24em] text-white/25">Resolution Logic</p>
-                                        <span className="text-xs text-white/50">
+                                <div className="mt-5">
+                                    <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                                        <p className="text-[10px] font-black uppercase tracking-[0.24em] text-violet-200/38">Resolution Logic</p>
+                                        <span className="text-[11px] text-white/46">
                                             {market.resolved ? (
                                                 <>
-                                                    Resolved: <span className="font-bold text-emerald-400">{formatTimestamp(market.settledAt)}</span>
+                                                    Resolved <span className="font-semibold text-emerald-300">{formatCompactTimestamp(market.settledAt)}</span>
                                                 </>
                                             ) : (
                                                 <>
-                                                    Evaluation Target: <span className="font-bold text-white/90">{formatTimestamp(market.endTimestamp)}</span>
+                                                    Evaluates at <span className="font-semibold text-white/85">{formatCompactTimestamp(market.endTimestamp)}</span>
                                                 </>
                                             )}
                                         </span>
                                     </div>
-                                    <div className="flex flex-col gap-3">
+                                    <div className="rounded-2xl border border-white/5 bg-black/15 p-3">
+                                        <div className="flex flex-col gap-2.5">
                                         {market.conditions.map((condition, index) => {
                                             const decimals = assetSeries.find((entry) => (
                                                 entry.assetSymbol === condition.assetSymbol
@@ -1161,25 +1286,23 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
                                             const resolvedCondition = market.resolvedConditions?.[index];
 
                                             return (
-                                                <div key={`${condition.assetSymbol}-logic-group-${index}`} className="flex flex-col gap-3">
+                                                <div key={`${condition.assetSymbol}-logic-group-${index}`} className="flex flex-col gap-2.5">
                                                     {operator && (
-                                                        <div className="flex items-center gap-3 py-1">
-                                                            <div className="h-[1px] flex-1 bg-white/10" />
-                                                            <span className="rounded-md bg-white/5 border border-white/10 px-2.5 py-1 text-[10px] font-black text-white/45 uppercase tracking-widest leading-none">
+                                                        <div className="px-1">
+                                                            <span className="text-[9px] font-black uppercase tracking-[0.22em] text-violet-200/28">
                                                                 {operator}
                                                             </span>
-                                                            <div className="h-[1px] flex-1 bg-white/10" />
                                                         </div>
                                                     )}
-                                                    <div className={`flex flex-col gap-1.5 border rounded-2xl p-4 bg-white/[0.01] ${
+                                                    <div className={`rounded-xl border px-4 py-3 ${
                                                         resolvedCondition?.satisfied 
-                                                            ? "border-emerald-500/20"
+                                                            ? "border-emerald-500/20 bg-emerald-500/[0.04]"
                                                             : market.resolved
-                                                                ? "border-red-500/20"
-                                                                : "border-white/5"
+                                                                ? "border-red-500/20 bg-red-500/[0.03]"
+                                                                : "border-violet-500/12 bg-violet-500/[0.05]"
                                                     }`}>
-                                                        <div className="flex items-center justify-between gap-3">
-                                                            <span className={`text-sm font-black tracking-wide ${
+                                                        <div className="flex flex-wrap items-center justify-between gap-3">
+                                                            <span className={`text-base font-semibold leading-snug ${
                                                                 resolvedCondition?.satisfied 
                                                                     ? "text-emerald-300"
                                                                     : market.resolved
@@ -1189,7 +1312,7 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
                                                                 {readableConditionLabel(condition, decimals)}
                                                             </span>
                                                             {resolvedCondition && (
-                                                                <span className={`text-[10px] uppercase font-black tracking-widest border px-2 py-0.5 rounded-full ${
+                                                                <span className={`rounded-full border px-2.5 py-1 text-[9px] font-black uppercase tracking-[0.18em] ${
                                                                     resolvedCondition.satisfied 
                                                                         ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400" 
                                                                         : "border-red-500/30 bg-red-500/10 text-red-400"
@@ -1199,14 +1322,18 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
                                                             )}
                                                         </div>
                                                         {resolvedCondition && resolvedCondition.observedTimestamp > 0 && (
-                                                            <span className="text-[10px] text-white/40 mt-1">
-                                                                Observed: <span className="text-white/60 font-semibold">{formatOracleThreshold(resolvedCondition.observedPrice, decimals)}</span> at {formatTimestamp(resolvedCondition.observedTimestamp)}
-                                                            </span>
+                                                            <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-white/42">
+                                                                <span>Observed</span>
+                                                                <span className="font-semibold text-white/72">{formatOracleThreshold(resolvedCondition.observedPrice, decimals)}</span>
+                                                                <span>at</span>
+                                                                <span className="font-semibold text-white/62">{formatCompactTimestamp(resolvedCondition.observedTimestamp)}</span>
+                                                            </div>
                                                         )}
                                                     </div>
                                                 </div>
                                             );
                                         })}
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -1214,180 +1341,188 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
                     </div>
                     <div className="bg-[#121214]/60 backdrop-blur-xl border border-white/5 p-5 sm:p-8 rounded-2xl sm:rounded-3xl space-y-6">
                         <div className="flex items-center gap-3">
-                            <Wallet className="w-5 h-5 text-white/60" />
+                            <Wallet className="w-5 h-5 text-violet-200/80" />
                             <h2 className="text-lg sm:text-xl font-bold text-white">Private Position Vault</h2>
                         </div>
 
                         <div className="space-y-6">
-                            <div className="space-y-4">
-                                <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-5 sm:p-6">
-                                    <div className="mb-5 flex items-center justify-between gap-3">
-                                        <div>
-                                            <p className="text-[10px] uppercase tracking-[0.22em] text-white/30 font-black">Portfolio Summary</p>
-                                            <p className="mt-2 text-sm text-white/50">Your private exposure in this market is tracked locally and claimed commitment by commitment.</p>
-                                        </div>
-                                        <div className="rounded-full border border-white/10 bg-white/[0.03] px-3 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-white/55">
-                                            {walletPositions.length} commitments
-                                        </div>
+                            <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-5 sm:p-6">
+                                <div className="mb-5 flex items-start justify-between gap-3">
+                                    <div>
+                                        <p className="text-[10px] uppercase tracking-[0.22em] text-violet-200/38 font-black">Portfolio Summary</p>
+                                        <p className="mt-2 text-sm text-white/50">Your private exposure in this market is tracked and claimed commitment by commitment.</p>
                                     </div>
-
-                                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                                        <div className="rounded-2xl border border-white/6 bg-black/20 p-4">
-                                            <p className="text-[10px] uppercase tracking-[0.2em] text-white/25 font-black">Total Private</p>
-                                            <p className="mt-2 text-lg font-black text-white">{formatUsdc(walletCommittedCollateral)}</p>
-                                        </div>
-                                        <div className="rounded-2xl border border-violet-500/15 bg-violet-500/5 p-4">
-                                            <p className="text-[10px] uppercase tracking-[0.2em] text-violet-200/45 font-black">YES Exposure</p>
-                                            <p className="mt-2 text-lg font-black text-violet-200">{formatUsdc(walletYesCommittedCollateral)}</p>
-                                        </div>
-                                        <div className="rounded-2xl border border-red-500/15 bg-red-500/5 p-4">
-                                            <p className="text-[10px] uppercase tracking-[0.2em] text-red-200/45 font-black">NO Exposure</p>
-                                            <p className="mt-2 text-lg font-black text-red-200">{formatUsdc(walletNoCommittedCollateral)}</p>
-                                        </div>
-                                        <div className="rounded-2xl border border-emerald-500/15 bg-emerald-500/5 p-4">
-                                            <p className="text-[10px] uppercase tracking-[0.2em] text-emerald-200/50 font-black">Claimable</p>
-                                            <p className="mt-2 text-lg font-black text-emerald-200">{market.resolved ? formatUsdc(walletClaimableTotal) : "Pending"}</p>
-                                        </div>
+                                    <div className="rounded-full border border-violet-500/15 bg-violet-500/[0.06] px-3 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-violet-100/70">
+                                        {walletPositions.length} commitments
                                     </div>
                                 </div>
 
-                                <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-5 sm:p-6">
-                                    <div className="mb-4 flex items-center justify-between gap-3">
-                                        <div>
-                                            <p className="text-[10px] uppercase tracking-[0.22em] text-white/30 font-black">Individual Commitments</p>
-                                            <p className="mt-2 text-sm text-white/50">Detailed private positions saved for this wallet.</p>
-                                        </div>
+                                <div className="grid grid-cols-2 gap-x-6 gap-y-4 border-t border-white/6 pt-4 sm:grid-cols-4">
+                                    <div>
+                                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/25">Total Private</p>
+                                        <p className="mt-1.5 text-base font-semibold text-white">{formatUsdc(walletCommittedCollateral)}</p>
                                     </div>
+                                    <div>
+                                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-violet-200/38">YES Exposure</p>
+                                        <p className="mt-1.5 text-base font-semibold text-white">{formatUsdc(walletYesCommittedCollateral)}</p>
+                                    </div>
+                                    <div>
+                                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/25">NO Exposure</p>
+                                        <p className="mt-1.5 text-base font-semibold text-white">{formatUsdc(walletNoCommittedCollateral)}</p>
+                                    </div>
+                                    <div>
+                                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/25">Claimable</p>
+                                        <p className="mt-1.5 text-base font-semibold text-white">{market.resolved ? formatUsdc(walletClaimableTotal) : "Pending"}</p>
+                                    </div>
+                                </div>
+                            </div>
 
-                                <div className="space-y-3 max-h-[240px] overflow-y-auto pr-1 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
+                            <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-5 sm:p-6">
+                                <div className="mb-4 flex items-center justify-between gap-3">
+                                    <div>
+                                        <p className="text-[10px] uppercase tracking-[0.22em] text-violet-200/38 font-black">Individual Commitments</p>
+                                        <p className="mt-2 text-sm text-white/50">Detailed private positions saved for this wallet.</p>
+                                    </div>
+                                </div>
+
+                                <div className="max-h-[260px] space-y-3 overflow-y-auto pr-2 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
                                     {walletPositions.length === 0 ? (
                                         <div className="rounded-2xl border border-white/5 bg-black/20 p-5">
                                             <p className="text-sm text-white/55">
                                                 No private positions saved for this wallet on this market yet.
-                                                </p>
-                                            </div>
-                                        ) : (
-                                            walletPositions.map((position, index) => {
-                                                const amount = BigInt(position.amountInStroops);
-                                                const payout = payoutForPosition(market, amount);
-                                                return (
-                                                    <div key={position.commitment} className="rounded-2xl border border-white/5 bg-black/20 p-4">
-                                                        <div className="mb-3 flex items-center justify-between gap-3">
-                                                            <div className="flex items-center gap-2">
-                                                                <span className={`px-2.5 py-0.5 rounded-full border text-[10px] uppercase font-black tracking-widest ${position.side === "YES" ? "bg-violet-500/10 border-violet-500/20 text-violet-300" : "bg-red-500/10 border-red-500/20 text-red-300"}`}>
-                                                                    {position.side}
-                                                                </span>
-                                                                <span className="text-[10px] uppercase tracking-[0.22em] text-white/25 font-black">
-                                                                    Commit #{index + 1}
-                                                                </span>
-                                                            </div>
-                                                            <span className="text-[10px] uppercase tracking-[0.22em] text-white/30 font-black">
-                                                                {positionStatusLabel(position, market)}
+                                            </p>
+                                        </div>
+                                    ) : (
+                                        walletPositions.map((position, index) => {
+                                            const amount = BigInt(position.amountInStroops);
+                                            const payout = payoutForPosition(market, amount);
+                                            return (
+                                                <div key={position.commitment} className="rounded-2xl border border-white/5 bg-black/20 p-4">
+                                                    <div className="flex flex-wrap items-center justify-between gap-3">
+                                                        <div className="flex items-center gap-2">
+                                                            <span className={`rounded-full border px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.18em] ${
+                                                                position.side === "YES"
+                                                                    ? "border-violet-500/20 bg-violet-500/[0.08] text-violet-100/80"
+                                                                    : "border-white/10 bg-white/[0.04] text-white/70"
+                                                            }`}>
+                                                                {position.side}
+                                                            </span>
+                                                            <span className="text-[10px] uppercase tracking-[0.22em] text-white/25 font-black">
+                                                                Commit #{index + 1}
                                                             </span>
                                                         </div>
-                                                        <div className="grid grid-cols-2 gap-3 text-sm">
-                                                            <div>
-                                                                <p className="text-[9px] uppercase tracking-[0.22em] text-white/20 font-black mb-2">Amount</p>
-                                                                <p className="font-black text-white">{stroopsToUsdc(amount).toFixed(2)} USDC</p>
-                                                            </div>
-                                                            <div>
-                                                                <p className="text-[9px] uppercase tracking-[0.22em] text-white/20 font-black mb-2">Expected Payout</p>
-                                                                <p className="font-black text-white">{market.resolved ? formatUsdc(payout) : "Pending"}</p>
-                                                            </div>
+                                                        <span className="text-[10px] uppercase tracking-[0.22em] text-white/30 font-black">
+                                                            {positionStatusLabel(position, market)}
+                                                        </span>
+                                                    </div>
+                                                    <div className="mt-4 grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
+                                                        <div>
+                                                            <p className="mb-1.5 text-[9px] font-black uppercase tracking-[0.22em] text-white/20">Amount</p>
+                                                            <p className="font-semibold text-white">{stroopsToUsdc(amount).toFixed(2)} USDC</p>
                                                         </div>
-                                                        {position.tallyStatus === "share_upload_failed" ? (
-                                                            <button
-                                                                className="mt-4 w-full rounded-2xl bg-amber-300 px-4 py-3 text-xs font-black uppercase tracking-[0.2em] text-black"
-                                                                disabled={busy === `tally-${position.commitment}`}
-                                                                onClick={() => void handleSubmitTally(position)}
-                                                            >
-                                                                {busy === `tally-${position.commitment}` ? "Retrying upload..." : "Retry share upload"}
-                                                            </button>
-                                                        ) : position.tallyStatus !== "queued_for_auto_finalization" && position.tallyStatus !== "finalizing" && position.tallyStatus !== "tally_submitted" && marketNeedsTally ? (
-                                                            <button
-                                                                className="mt-4 w-full rounded-2xl bg-white px-4 py-3 text-xs font-black uppercase tracking-[0.2em] text-black"
-                                                                disabled={busy === `tally-${position.commitment}`}
-                                                                onClick={() => void handleSubmitTally(position)}
-                                                            >
-                                                                {busy === `tally-${position.commitment}` ? "Submitting tally..." : "Submit private tally"}
-                                                            </button>
-                                                        ) : position.tallyStatus === "tally_submitted" || position.tallyStatus === "queued_for_auto_finalization" ? (
-                                                            <div className="mt-4 rounded-2xl border border-emerald-500/15 bg-emerald-500/5 px-4 py-3 text-xs font-black uppercase tracking-[0.18em] text-emerald-200">
-                                                                Queued for auto-finalization
-                                                            </div>
-                                                        ) : position.tallyStatus === "finalizing" ? (
-                                                            <div className="mt-4 rounded-2xl border border-amber-500/15 bg-amber-500/5 px-4 py-3 text-xs font-black uppercase tracking-[0.18em] text-amber-200">
-                                                                Finalizing
-                                                            </div>
-                                                        ) : null}
-                                                        <div className="mt-4 text-[11px] text-white/35 font-mono break-all">
-                                                            {position.commitment}
+                                                        <div>
+                                                            <p className="mb-1.5 text-[9px] font-black uppercase tracking-[0.22em] text-white/20">Expected Payout</p>
+                                                            <p className="font-semibold text-white">{market.resolved ? formatUsdc(payout) : "Pending"}</p>
                                                         </div>
                                                     </div>
-                                                );
-                                            })
-                                        )}
+                                                    <div className="mt-4 border-t border-white/6 pt-3 text-[11px] font-mono text-white/35 break-all">
+                                                        {position.commitment}
+                                                    </div>
+                                                    {position.tallyStatus === "share_upload_failed" ? (
+                                                        <button
+                                                            className="mt-4 w-full rounded-2xl border border-white/10 bg-white px-4 py-3 text-xs font-black uppercase tracking-[0.2em] text-black transition-colors hover:bg-white/90"
+                                                            disabled={busy === `tally-${position.commitment}`}
+                                                            onClick={() => void handleSubmitTally(position)}
+                                                        >
+                                                            {busy === `tally-${position.commitment}` ? "Retrying upload..." : "Retry share upload"}
+                                                        </button>
+                                                    ) : position.tallyStatus !== "queued_for_auto_finalization" && position.tallyStatus !== "finalizing" && position.tallyStatus !== "tally_submitted" && marketNeedsTally ? (
+                                                        <button
+                                                            className="mt-4 w-full rounded-2xl border border-white/10 bg-white px-4 py-3 text-xs font-black uppercase tracking-[0.2em] text-black transition-colors hover:bg-white/90"
+                                                            disabled={busy === `tally-${position.commitment}`}
+                                                            onClick={() => void handleSubmitTally(position)}
+                                                        >
+                                                            {busy === `tally-${position.commitment}` ? "Submitting tally..." : "Submit private tally"}
+                                                        </button>
+                                                    ) : position.tallyStatus === "tally_submitted" || position.tallyStatus === "queued_for_auto_finalization" ? (
+                                                        <div className="mt-4 rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3 text-xs font-black uppercase tracking-[0.18em] text-white/60">
+                                                            Queued for auto-finalization
+                                                        </div>
+                                                    ) : position.tallyStatus === "finalizing" ? (
+                                                        <div className="mt-4 rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3 text-xs font-black uppercase tracking-[0.18em] text-white/60">
+                                                            Finalizing
+                                                        </div>
+                                                    ) : null}
+                                                </div>
+                                            );
+                                        })
+                                    )}
+                                </div>
+                            </div>
+
+                            {walletAllTallied && !market.resolved ? (
+                                <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-5">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <div className="flex items-center gap-2">
+                                            <Clock3 className="h-4 w-4 text-white/60" />
+                                            <p className="text-[10px] font-black uppercase tracking-[0.22em] text-white/35">Next Step</p>
+                                        </div>
+                                        <span className="text-[10px] font-black uppercase tracking-[0.22em] text-white/40">
+                                            {walletTalliedPositions.length}/{walletPositions.length} tallied
+                                        </span>
+                                    </div>
+                                    <p className="mt-3 text-sm leading-relaxed text-white/60">
+                                        {marketReadyToFinalize
+                                            ? "The tally window is closed. The backend will finalize this market automatically."
+                                            : `All of your positions are tallied. Auto-finalization starts in ${tallyCountdown}.`}
+                                    </p>
+                                    <div className="mt-4 grid grid-cols-2 gap-x-6 gap-y-3 border-t border-white/6 pt-4 text-sm">
+                                        <div>
+                                            <p className="text-[9px] font-black uppercase tracking-[0.22em] text-white/25">Tally Deadline</p>
+                                            <p className="mt-1 font-semibold text-white">{formatCompactTimestamp(market.tallyDeadline)}</p>
+                                        </div>
+                                        <div>
+                                            <p className="text-[9px] font-black uppercase tracking-[0.22em] text-white/25">Countdown</p>
+                                            <p className="mt-1 font-semibold text-white">{marketReadyToFinalize ? "Ready now" : tallyCountdown}</p>
+                                        </div>
                                     </div>
                                 </div>
+                            ) : null}
 
-                                {walletAllTallied && !market.resolved && (
-                                    <div className={`mt-4 rounded-2xl border p-5 ${marketReadyToFinalize ? "border-emerald-500/20 bg-emerald-500/5" : "border-white/5 bg-white/[0.02]"}`}>
-                                        <div className="flex items-center justify-between gap-3">
-                                            <div className="flex items-center gap-2">
-                                                <Clock3 className={`w-4 h-4 ${marketReadyToFinalize ? "text-emerald-300" : "text-white/60"}`} />
-                                                <p className={`text-[10px] uppercase tracking-[0.22em] font-black ${marketReadyToFinalize ? "text-emerald-200/80" : "text-white/35"}`}>
-                                                    Next Step
-                                                </p>
-                                            </div>
-                                            <span className="text-[10px] uppercase tracking-[0.22em] font-black text-white/40">
-                                                {walletTalliedPositions.length}/{walletPositions.length} tallied
-                                            </span>
-                                        </div>
-                                        <p className="mt-3 text-sm leading-relaxed text-white/60">
-                                            {marketReadyToFinalize
-                                                ? "The tally window is closed. The backend will finalize this market automatically."
-                                                : `All of your positions are tallied. Auto-finalization starts in ${tallyCountdown}.`}
+                            {market.resolved ? (
+                                <div className={`rounded-2xl border p-5 ${
+                                    market.outcome === "YES"
+                                        ? "border-emerald-500/15 bg-emerald-500/5"
+                                        : "border-red-500/15 bg-red-500/5"
+                                }`}>
+                                    <div className="mb-4 flex items-center gap-2">
+                                        <ShieldCheck className={`h-4 w-4 ${market.outcome === "YES" ? "text-emerald-300" : "text-red-300"}`} />
+                                        <p className={`text-[10px] font-black uppercase tracking-[0.22em] ${
+                                            market.outcome === "YES" ? "text-emerald-200/80" : "text-red-200/80"
+                                        }`}>
+                                            Settlement Data
                                         </p>
-                                        <div className="mt-4 grid grid-cols-2 gap-3 text-xs">
-                                            <div className="rounded-2xl border border-white/5 bg-black/15 p-3">
-                                                <p className="text-[9px] uppercase tracking-[0.22em] text-white/25 font-black">Tally Deadline</p>
-                                                <p className="mt-1 font-bold text-white">{formatTimestamp(market.tallyDeadline)}</p>
-                                            </div>
-                                            <div className="rounded-2xl border border-white/5 bg-black/15 p-3">
-                                                <p className="text-[9px] uppercase tracking-[0.22em] text-white/25 font-black">Countdown</p>
-                                                <p className="mt-1 font-bold text-white">{marketReadyToFinalize ? "Ready now" : tallyCountdown}</p>
-                                            </div>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-x-6 gap-y-4">
+                                        <div>
+                                            <p className="mb-1.5 text-[9px] font-black uppercase tracking-[0.22em] text-white/20">Outcome</p>
+                                            <p className="text-base font-semibold text-white">{market.outcome}</p>
+                                        </div>
+                                        <div>
+                                            <p className="mb-1.5 text-[9px] font-black uppercase tracking-[0.22em] text-white/20">Settled</p>
+                                            <p className="text-sm font-semibold text-white">{formatCompactTimestamp(market.settledAt)}</p>
+                                        </div>
+                                        <div>
+                                            <p className="mb-1.5 text-[9px] font-black uppercase tracking-[0.22em] text-white/20">Distributable Pot</p>
+                                            <p className="text-base font-semibold text-white">{formatUsdc(market.distributablePot)}</p>
+                                        </div>
+                                        <div>
+                                            <p className="mb-1.5 text-[9px] font-black uppercase tracking-[0.22em] text-white/20">Winning Total</p>
+                                            <p className="text-base font-semibold text-white">{formatUsdc(market.winningSideTotal)}</p>
                                         </div>
                                     </div>
-                                )}
-
-                                {market.resolved ? (
-                                    <div className="rounded-2xl border border-emerald-500/15 bg-emerald-500/5 p-5">
-                                        <div className="flex items-center gap-2 mb-4">
-                                            <ShieldCheck className="w-4 h-4 text-emerald-300" />
-                                            <p className="text-[10px] uppercase tracking-[0.22em] text-emerald-200/80 font-black">Settlement Data</p>
-                                        </div>
-                                        <div className="grid grid-cols-2 gap-4">
-                                            <div>
-                                                <p className="text-[9px] uppercase tracking-[0.22em] text-white/20 font-black mb-2">Outcome</p>
-                                                <p className="text-base font-black text-white">{market.outcome}</p>
-                                            </div>
-                                            <div>
-                                                <p className="text-[9px] uppercase tracking-[0.22em] text-white/20 font-black mb-2">Settled</p>
-                                                <p className="text-sm font-black text-white">{formatTimestamp(market.settledAt)}</p>
-                                            </div>
-                                            <div>
-                                                <p className="text-[9px] uppercase tracking-[0.22em] text-white/20 font-black mb-2">Distributable Pot</p>
-                                                <p className="text-base font-black text-white">{formatUsdc(market.distributablePot)}</p>
-                                            </div>
-                                            <div>
-                                                <p className="text-[9px] uppercase tracking-[0.22em] text-white/20 font-black mb-2">Winning Total</p>
-                                                <p className="text-base font-black text-white">{formatUsdc(market.winningSideTotal)}</p>
-                                            </div>
-                                        </div>
-                                    </div>
-                                ) : null}
-                            </div>
+                                </div>
+                            ) : null}
                         </div>
                     </div>
                 </div>

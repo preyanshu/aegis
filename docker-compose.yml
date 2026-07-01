@@ -14,9 +14,9 @@ services:
     depends_on:
       - mongo
     ports:
-      - "4001:4001"
+      - "4003:4003"
     environment:
-      PORT: 4001
+      PORT: 4003
       MONGODB_URI: mongodb://mongo:27017/verdict
       CORS_ORIGIN: http://localhost:3001
       STELLAR_RPC: ${STELLAR_RPC}

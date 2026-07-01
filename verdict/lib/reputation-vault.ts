@@ -1,24 +1,36 @@
 import { fetchPublicProfile, upsertPublicProfile } from "@/lib/public-profile";
 import { loadSavedPositions } from "@/lib/blind-market";
 import type { BlindPositionRecord } from "@/lib/types";
-import type { ReputationClaimDescriptor } from "@/lib/reputation";
+import type {
+  AttestedReputationRecord,
+  PrivateReputationWitness,
+  SerializedReputationClaimDescriptor,
+} from "@/lib/reputation";
 
 export type ReputationSyncMode = "server" | "local";
 
 export type StoredReputationCredential = {
   serialized: string;
-  isValid: boolean;
   proofHex: string;
   publicInputsHex: string[];
+  snapshotRoot: string;
+  attestorKeyId: string;
+  proofValid: boolean;
+  snapshotVerified: boolean;
+  displayOrder?: number;
+  archivedAt?: number | null;
   publicClaim: {
     subjectId: string;
     category: string;
     windowDays: number;
-    snapshotCommitment: string;
+    snapshotRoot: string;
+    attestorKeyId: string;
+    createdAt: number;
+    snapshotRecordCount: number;
     statement: string;
   };
   createdAt: number;
-  claim: ReputationClaimDescriptor;
+  claim: SerializedReputationClaimDescriptor;
 };
 
 export type ReputationSnapshot = {
@@ -30,6 +42,8 @@ export type ReputationSnapshot = {
     avatarDataUrl: string | null;
   };
   positions: BlindPositionRecord[];
+  attestedRecords: AttestedReputationRecord[];
+  privateReputationWitnesses: PrivateReputationWitness[];
   achievements: StoredReputationCredential[];
   updatedAt: number;
 };
@@ -42,6 +56,7 @@ export type ReputationProfileInput = {
 
 const SYNC_MODE_KEY_PREFIX = "verdict-reputation-sync-mode-v1:";
 const LOCAL_SNAPSHOT_KEY_PREFIX = "verdict-reputation-snapshot-v1:";
+const BACKEND_BASE_URL = process.env.NEXT_PUBLIC_PROFILE_BACKEND_URL ?? "http://127.0.0.1:4001";
 
 function syncModeKey(walletAddress: string) {
   return `${SYNC_MODE_KEY_PREFIX}${walletAddress.toLowerCase()}`;
@@ -52,7 +67,9 @@ function localSnapshotKey(walletAddress: string) {
 }
 
 function cloneSnapshot(snapshot: ReputationSnapshot): ReputationSnapshot {
-  return JSON.parse(JSON.stringify(snapshot)) as ReputationSnapshot;
+  return JSON.parse(JSON.stringify(snapshot, (_key, value) => (
+    typeof value === "bigint" ? value.toString() : value
+  ))) as ReputationSnapshot;
 }
 
 function normalizeSnapshot(snapshot: ReputationSnapshot, syncMode: ReputationSyncMode): ReputationSnapshot {
@@ -72,6 +89,8 @@ function emptySnapshot(walletAddress: string, syncMode: ReputationSyncMode = "se
       avatarDataUrl: null,
     },
     positions: [],
+    attestedRecords: [],
+    privateReputationWitnesses: [],
     achievements: [],
     updatedAt: Date.now(),
   };
@@ -105,7 +124,50 @@ function mergeCredentials(
     merged.set(entry.serialized, entry);
   }
 
-  return Array.from(merged.values()).sort((left, right) => right.createdAt - left.createdAt);
+  return Array.from(merged.values()).sort((left, right) => {
+    const leftOrder = left.displayOrder;
+    const rightOrder = right.displayOrder;
+    if (typeof leftOrder === "number" || typeof rightOrder === "number") {
+      if (typeof leftOrder !== "number") return 1;
+      if (typeof rightOrder !== "number") return -1;
+      if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+    }
+    return right.createdAt - left.createdAt;
+  });
+}
+
+function mergeAttestedRecords(
+  primary: AttestedReputationRecord[],
+  fallback: AttestedReputationRecord[],
+) {
+  const merged = new Map<string, AttestedReputationRecord>();
+
+  for (const entry of fallback) {
+    merged.set(entry.recordCommitment, entry);
+  }
+
+  for (const entry of primary) {
+    merged.set(entry.recordCommitment, entry);
+  }
+
+  return Array.from(merged.values()).sort((left, right) => right.claimedAt - left.claimedAt);
+}
+
+function mergePrivateWitnesses(
+  primary: PrivateReputationWitness[],
+  fallback: PrivateReputationWitness[],
+) {
+  const merged = new Map<string, PrivateReputationWitness>();
+
+  for (const entry of fallback) {
+    merged.set(entry.recordCommitment, entry);
+  }
+
+  for (const entry of primary) {
+    merged.set(entry.recordCommitment, entry);
+  }
+
+  return Array.from(merged.values()).sort((left, right) => right.claimedAt - left.claimedAt);
 }
 
 function mergeSnapshots(primary: ReputationSnapshot, fallback: ReputationSnapshot): ReputationSnapshot {
@@ -118,6 +180,8 @@ function mergeSnapshots(primary: ReputationSnapshot, fallback: ReputationSnapsho
       avatarDataUrl: primary.profile.avatarDataUrl ?? fallback.profile.avatarDataUrl,
     },
     positions: mergePositionRecords(primary.positions, fallback.positions),
+    attestedRecords: mergeAttestedRecords(primary.attestedRecords, fallback.attestedRecords),
+    privateReputationWitnesses: mergePrivateWitnesses(primary.privateReputationWitnesses, fallback.privateReputationWitnesses),
     achievements: mergeCredentials(primary.achievements, fallback.achievements),
     updatedAt: Math.max(primary.updatedAt ?? 0, fallback.updatedAt ?? 0, Date.now()),
   };
@@ -172,6 +236,12 @@ function readLocalSnapshot(walletAddress: string): ReputationSnapshot | null {
     if (!Array.isArray(parsed.achievements)) {
       parsed.achievements = [];
     }
+    if (!Array.isArray(parsed.attestedRecords)) {
+      parsed.attestedRecords = [];
+    }
+    if (!Array.isArray(parsed.privateReputationWitnesses)) {
+      parsed.privateReputationWitnesses = [];
+    }
     if (!parsed.profile) {
       parsed.profile = emptySnapshot(walletAddress, "local").profile;
     }
@@ -196,17 +266,20 @@ function writeLocalSnapshot(snapshot: ReputationSnapshot) {
     return;
   }
 
-  window.localStorage.setItem(localSnapshotKey(snapshot.walletAddress), JSON.stringify(snapshot, null, 2));
+  window.localStorage.setItem(localSnapshotKey(snapshot.walletAddress), JSON.stringify(snapshot, (_key, value) => (
+    typeof value === "bigint" ? value.toString() : value
+  ), 2));
   writeStoredSyncMode(snapshot.walletAddress, "local");
 }
 
 async function readServerSnapshot(walletAddress: string): Promise<ReputationSnapshot | null> {
-  const [profile, vault] = await Promise.all([
+  const [profile, vault, attestedRecords] = await Promise.all([
     fetchPublicProfile(walletAddress).catch(() => null),
     fetchReputationVault(walletAddress).catch(() => null),
+    fetchAttestedRecords(walletAddress).catch(() => null),
   ]);
 
-  if (!profile && !vault) {
+  if (!profile && !vault && !attestedRecords) {
     return null;
   }
 
@@ -219,6 +292,8 @@ async function readServerSnapshot(walletAddress: string): Promise<ReputationSnap
       avatarDataUrl: profile?.avatarDataUrl ?? null,
     },
     positions: vault?.positions ?? [],
+    attestedRecords: attestedRecords ?? vault?.attestedRecords ?? [],
+    privateReputationWitnesses: [],
     achievements: vault?.achievements ?? [],
     updatedAt: vault?.updatedAt ?? Date.now(),
   };
@@ -243,6 +318,7 @@ export async function fetchReputationVault(walletAddress: string): Promise<Omit<
       walletAddress: string;
       syncMode: ReputationSyncMode;
       positions: BlindPositionRecord[];
+      attestedRecords: AttestedReputationRecord[];
       achievements: StoredReputationCredential[];
       updatedAt: number;
     } | null;
@@ -256,9 +332,55 @@ export async function fetchReputationVault(walletAddress: string): Promise<Omit<
     walletAddress: data.vault.walletAddress,
     syncMode: data.vault.syncMode,
     positions: data.vault.positions ?? [],
+    attestedRecords: data.vault.attestedRecords ?? [],
+    privateReputationWitnesses: [],
     achievements: data.vault.achievements ?? [],
     updatedAt: data.vault.updatedAt ?? Date.now(),
   };
+}
+
+export async function fetchAttestedRecords(walletAddress: string): Promise<AttestedReputationRecord[]> {
+  const response = await fetch(`${BACKEND_BASE_URL.replace(/\/$/, "")}/reputation-records/${encodeURIComponent(walletAddress)}`, {
+    method: "GET",
+    cache: "no-store",
+  });
+
+  if (response.status === 404) {
+    return [];
+  }
+
+  if (!response.ok) {
+    throw new Error("Failed to fetch attested reputation records");
+  }
+
+  const data = await response.json() as { records?: AttestedReputationRecord[] };
+  return Array.isArray(data.records) ? data.records : [];
+}
+
+export async function attestClaimRecord(input: {
+  walletAddress: string;
+  marketId: string;
+  commitment: string;
+  nullifier: string;
+  claimTxHash: string;
+  category: string;
+  recordCommitment: string;
+  witnessSalt: string;
+  claimedAt: number;
+}) {
+  const response = await fetch(`${BACKEND_BASE_URL.replace(/\/$/, "")}/reputation/attest-claim`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(input),
+  });
+
+  const data = await response.json().catch(() => null) as { error?: string; record?: AttestedReputationRecord } | null;
+  if (!response.ok || !data?.record) {
+    throw new Error(data?.error ?? "Failed to attest claim");
+  }
+  return data.record;
 }
 
 export async function upsertReputationVault(snapshot: ReputationSnapshot) {
@@ -271,6 +393,7 @@ export async function upsertReputationVault(snapshot: ReputationSnapshot) {
       walletAddress: snapshot.walletAddress,
       syncMode: snapshot.syncMode,
       positions: snapshot.positions,
+      attestedRecords: snapshot.attestedRecords,
       achievements: snapshot.achievements,
     }),
   });
@@ -285,6 +408,7 @@ export async function upsertReputationVault(snapshot: ReputationSnapshot) {
       walletAddress: string;
       syncMode: ReputationSyncMode;
       positions: BlindPositionRecord[];
+      attestedRecords: AttestedReputationRecord[];
       achievements: StoredReputationCredential[];
       updatedAt: number;
     };
@@ -447,6 +571,32 @@ export async function markClaimedPosition(
   });
 }
 
+export async function upsertAttestedRecord(walletAddress: string, attestedRecord: AttestedReputationRecord) {
+  const snapshot = await loadReputationSnapshot(walletAddress);
+  const attestedRecords = [
+    attestedRecord,
+    ...snapshot.attestedRecords.filter((entry) => entry.recordCommitment !== attestedRecord.recordCommitment),
+  ];
+  return saveReputationSnapshot({
+    ...snapshot,
+    attestedRecords,
+    updatedAt: Date.now(),
+  });
+}
+
+export async function upsertPrivateReputationWitness(walletAddress: string, witness: PrivateReputationWitness) {
+  const snapshot = await loadReputationSnapshot(walletAddress);
+  const privateReputationWitnesses = [
+    witness,
+    ...snapshot.privateReputationWitnesses.filter((entry) => entry.recordCommitment !== witness.recordCommitment),
+  ];
+  return saveReputationSnapshot({
+    ...snapshot,
+    privateReputationWitnesses,
+    updatedAt: Date.now(),
+  });
+}
+
 export async function upsertAchievement(walletAddress: string, achievement: StoredReputationCredential) {
   const snapshot = await loadReputationSnapshot(walletAddress);
   const achievements = [
@@ -457,6 +607,38 @@ export async function upsertAchievement(walletAddress: string, achievement: Stor
     ...snapshot,
     achievements,
     updatedAt: Date.now(),
+  });
+}
+
+export async function archiveAchievement(walletAddress: string, serialized: string, archived = true) {
+  const snapshot = await loadReputationSnapshot(walletAddress);
+  const achievements = snapshot.achievements.map((entry) => (
+    entry.serialized === serialized
+      ? { ...entry, archivedAt: archived ? Date.now() : null }
+      : entry
+  ));
+  return saveReputationSnapshot({
+    ...snapshot,
+    achievements,
+    updatedAt: Date.now(),
+  });
+}
+
+export async function removeAchievement(walletAddress: string, serialized: string) {
+  const snapshot = await loadReputationSnapshot(walletAddress);
+  const achievements = snapshot.achievements.filter((entry) => entry.serialized !== serialized);
+  return saveReputationSnapshot({
+    ...snapshot,
+    achievements,
+    updatedAt: Date.now(),
+  });
+}
+
+export async function replaceAchievements(walletAddress: string, achievements: StoredReputationCredential[]) {
+  const snapshot = await loadReputationSnapshot(walletAddress);
+  return saveReputationSnapshot({
+    ...snapshot,
+    achievements,
   });
 }
 

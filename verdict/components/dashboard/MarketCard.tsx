@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import type { BlindMarketSummary } from "@/lib/types";
+import { useEffect, useMemo, useState } from "react";
+import type { BlindMarketSummary, BlindPositionRecord } from "@/lib/types";
 import { AnimatePresence, motion } from "framer-motion";
 import { ChevronDown, ChevronUp, Database, LockKeyhole, ShieldCheck, Wallet } from "lucide-react";
 import { formatCompactAddress, formatUsdc, marketStatusLabel, loadSavedPositions } from "@/lib/blind-market";
@@ -12,19 +12,14 @@ interface MarketCardProps {
     onClick?: (id: string) => void;
 }
 
-function formatDate(timestamp: number) {
-    return new Date(timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
-
 function LiveCountdown({ endTimestamp, resolved }: { endTimestamp: number, resolved: boolean }) {
-    const [timeLeft, setTimeLeft] = useState("");
+    const [timeLeft, setTimeLeft] = useState(resolved ? "Resolved" : "");
 
     useEffect(() => {
         if (resolved) {
-            setTimeLeft("Resolved");
             return;
         }
-        
+
         const update = () => {
             const now = Date.now();
             const diff = endTimestamp - now;
@@ -64,10 +59,11 @@ function LiveCountdown({ endTimestamp, resolved }: { endTimestamp: number, resol
 
 export function MarketCard({ market, onClick }: MarketCardProps) {
     const [isExpanded, setIsExpanded] = useState(false);
-    const [hasPosition, setHasPosition] = useState(false);
     const status = marketStatusLabel(market);
+    const yesResolvedValue = market.resolved ? (market.outcome === "YES" ? 1 : 0) : null;
+    const noResolvedValue = market.resolved ? (market.outcome === "NO" ? 1 : 0) : null;
 
-    useEffect(() => {
+    const hasPosition = useMemo(() => {
         try {
             const config = getBrowserConfig();
             const walletLabel = config.wallets[0]?.label ?? "admin";
@@ -75,10 +71,13 @@ export function MarketCard({ market, onClick }: MarketCardProps) {
             const walletPublic = wallet ? walletPublicKey(walletLabel) : "";
             
             const savedPositions = loadSavedPositions();
-            const positions = savedPositions.filter((p: any) => p.owner === walletPublic && p.marketId === market.marketId);
-            setHasPosition(positions.length > 0);
+            const positions = savedPositions.filter((position: BlindPositionRecord) => (
+                position.owner === walletPublic && position.marketId === market.marketId
+            ));
+            return positions.length > 0;
         } catch (e) {
             console.error("Failed to load positions for card:", e);
+            return false;
         }
     }, [market.marketId]);
 
@@ -110,14 +109,29 @@ export function MarketCard({ market, onClick }: MarketCardProps) {
             </div>
 
             <div className="flex flex-wrap sm:flex-nowrap items-center gap-3 mb-7">
-                <div className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl bg-violet-500/10 border border-violet-500/20 text-violet-300 font-semibold text-base transition-colors">
-                    <LockKeyhole className="w-4 h-4 sm:w-5 sm:h-5" />
-                    Encrypted
-                </div>
-                <button className="flex-1 sm:flex-none px-10 py-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-bold text-base transition-colors hover:bg-emerald-500/20">
+                {market.resolved ? (
+                    <div className="flex flex-1 items-center rounded-xl border border-emerald-500/25 bg-emerald-500/[0.07] px-4 py-3.5">
+                        <div className="flex w-full items-center justify-between gap-3 text-sm font-semibold">
+                            <span className={market.outcome === "YES" ? "text-emerald-300" : "text-rose-300"}>
+                                Resolved: {market.outcome}
+                            </span>
+                            <span className="text-white/45">
+                                <span className="text-white/60">Yes {Math.round((yesResolvedValue ?? 0) * 100)}%</span>
+                                {" / "}
+                                <span className="text-white/60">No {Math.round((noResolvedValue ?? 0) * 100)}%</span>
+                            </span>
+                        </div>
+                    </div>
+                ) : (
+                    <div className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl bg-violet-500/10 border border-violet-500/20 text-violet-300 font-semibold text-base transition-colors">
+                        <LockKeyhole className="w-4 h-4 sm:w-5 sm:h-5" />
+                        Encrypted
+                    </div>
+                )}
+                <button className="h-[52px] flex-1 rounded-xl bg-emerald-500/10 border border-emerald-500/20 px-10 text-emerald-400 font-bold text-base transition-colors hover:bg-emerald-500/20 sm:flex-none">
                     Yes
                 </button>
-                <button className="flex-1 sm:flex-none px-10 py-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 font-bold text-base transition-colors hover:bg-rose-500/20">
+                <button className="h-[52px] flex-1 rounded-xl bg-rose-500/10 border border-rose-500/20 px-10 text-rose-400 font-bold text-base transition-colors hover:bg-rose-500/20 sm:flex-none">
                     No
                 </button>
             </div>

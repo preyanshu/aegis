@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-const PROFILE_BACKEND_URL = process.env.PROFILE_BACKEND_URL ?? "http://localhost:4001";
+const PROFILE_BACKEND_URL = process.env.PROFILE_BACKEND_URL ?? "http://127.0.0.1:4001";
 
 function backendUrl(path: string) {
   return `${PROFILE_BACKEND_URL.replace(/\/$/, "")}${path}`;

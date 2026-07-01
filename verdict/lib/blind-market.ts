@@ -107,7 +107,11 @@ export function stroopsToUsdc(value: bigint) {
 }
 
 export function formatUsdc(value: bigint) {
-  return `$${stroopsToUsdc(value).toLocaleString(undefined, {
+  const amount = stroopsToUsdc(value);
+  if (value > 0n && amount < 0.01) {
+    return "<$0.01";
+  }
+  return `$${amount.toLocaleString(undefined, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
@@ -131,7 +135,7 @@ export function marketStatusLabel(market: BlindMarketSummary) {
   if (market.tallyFinalized) {
     return "Resolved";
   }
-  return market.talliedCount > 0 ? "Queued for Auto-Finalization" : "Ready to Finalize";
+  return market.talliedCount > 0 ? "Queued for Auto-Finalization" : "Missed Tally Window";
 }
 
 export function positionStatusLabel(position: BlindPositionRecord, market: BlindMarketSummary | null) {

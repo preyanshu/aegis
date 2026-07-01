@@ -135,6 +135,8 @@ export function PublicProfileOnboardingModal({ isOpen, onOpenChange }: PublicPro
               avatarDataUrl: null,
             },
             positions: [],
+            attestedRecords: [],
+            privateReputationWitnesses: [],
             achievements: [],
             updatedAt: Date.now(),
           }

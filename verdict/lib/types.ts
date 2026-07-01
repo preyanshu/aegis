@@ -67,6 +67,7 @@ export interface BlindPositionRecord {
     }>;
     claimTxHash?: string;
     claimedAt?: number;
+    reputationAttestationStatus?: "pending" | "attested";
 }
 
 export interface BlindDashboardState {

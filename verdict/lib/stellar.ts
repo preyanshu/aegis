@@ -805,6 +805,30 @@ function formatReflectorDecimal(price: bigint, decimals: number) {
   return `${negative ? "-" : ""}${whole.toString()}.${fractionText}`;
 }
 
+type ReflectorLatestPriceResult = null | {
+  price: bigint;
+  decimals: number;
+  formatted: string;
+  timestamp: number;
+};
+
+type ReflectorHistoryResult = {
+  decimals: number;
+  points: Array<{
+    timestamp: number;
+    price: bigint;
+    formatted: string;
+  }>;
+};
+
+const reflectorLatestPriceCache = new Map<string, {
+  expiresAt: number;
+  value: ReflectorLatestPriceResult;
+}>();
+const reflectorLatestPriceInflight = new Map<string, Promise<ReflectorLatestPriceResult>>();
+const reflectorHistoryCache = new Map<string, ReflectorHistoryResult>();
+const reflectorHistoryInflight = new Map<string, Promise<ReflectorHistoryResult>>();
+
 async function readFromContract<T = unknown>(targetContractId: string, method: string, args: xdr.ScVal[] = []) {
   const config = getGlobalConfig();
   const signer = config.wallets[0];
@@ -834,32 +858,50 @@ async function readFromContract<T = unknown>(targetContractId: string, method: s
 export async function loadReflectorPrice(
   oracleContractId: string,
   assetSymbol: string,
-): Promise<null | {
-  price: bigint;
-  decimals: number;
-  formatted: string;
-  timestamp: number;
-}> {
-  const [decimals, priceData] = await Promise.all([
-    readFromContract<number>(oracleContractId, "decimals"),
-    readFromContract<{ price?: bigint; timestamp?: bigint } | null>(oracleContractId, "lastprice", [
-      reflectorOtherAssetScVal(assetSymbol),
-    ]),
-  ]);
-
-  if (!priceData?.price || !priceData.timestamp) {
-    return null;
+) : Promise<ReflectorLatestPriceResult> {
+  const cacheKey = `${oracleContractId}:${assetSymbol}`;
+  const now = Date.now();
+  const cached = reflectorLatestPriceCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
   }
 
-  const price = BigInt(priceData.price);
-  const timestamp = Number(priceData.timestamp);
+  const inflight = reflectorLatestPriceInflight.get(cacheKey);
+  if (inflight) {
+    return inflight;
+  }
 
-  return {
-    price,
-    decimals: Number(decimals),
-    formatted: formatReflectorDecimal(price, Number(decimals)),
-    timestamp,
-  };
+  const request = (async () => {
+    const [decimals, priceData] = await Promise.all([
+      readFromContract<number>(oracleContractId, "decimals"),
+      readFromContract<{ price?: bigint; timestamp?: bigint } | null>(oracleContractId, "lastprice", [
+        reflectorOtherAssetScVal(assetSymbol),
+      ]),
+    ]);
+
+    const value = (!priceData?.price || !priceData.timestamp)
+      ? null
+      : {
+        price: BigInt(priceData.price),
+        decimals: Number(decimals),
+        formatted: formatReflectorDecimal(BigInt(priceData.price), Number(decimals)),
+        timestamp: Number(priceData.timestamp),
+      };
+
+    reflectorLatestPriceCache.set(cacheKey, {
+      expiresAt: now + 15_000,
+      value,
+    });
+
+    return value;
+  })();
+
+  reflectorLatestPriceInflight.set(cacheKey, request);
+  try {
+    return await request;
+  } finally {
+    reflectorLatestPriceInflight.delete(cacheKey);
+  }
 }
 
 export async function loadReflectorPriceHistory(
@@ -869,50 +911,70 @@ export async function loadReflectorPriceHistory(
     points?: number;
     intervalSeconds?: number;
     endTimestamp?: number;
+    cacheBucketSeconds?: number;
   },
-): Promise<{
-  decimals: number;
-  points: Array<{
-    timestamp: number;
-    price: bigint;
-    formatted: string;
-  }>;
-}> {
+): Promise<ReflectorHistoryResult> {
   const points = Math.max(4, Math.min(input?.points ?? 24, 72));
   const intervalSeconds = Math.max(300, input?.intervalSeconds ?? 3600);
-  const endTimestamp = input?.endTimestamp ?? Math.floor(Date.now() / 1000);
+  const requestedEndTimestamp = input?.endTimestamp ?? Math.floor(Date.now() / 1000);
+  const cacheBucketSeconds = Math.max(60, input?.cacheBucketSeconds ?? intervalSeconds);
+  const endTimestamp = requestedEndTimestamp;
   const startTimestamp = endTimestamp - intervalSeconds * (points - 1);
+  const normalizedCacheEndTimestamp = Math.floor(requestedEndTimestamp / cacheBucketSeconds) * cacheBucketSeconds;
+  const cacheKey = `${oracleContractId}:${assetSymbol}:${points}:${intervalSeconds}:${normalizedCacheEndTimestamp}`;
 
-  const decimals = Number(await readFromContract<number>(oracleContractId, "decimals"));
-  const timestamps = Array.from({ length: points }, (_, index) => startTimestamp + index * intervalSeconds);
+  const cached = reflectorHistoryCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
 
-  const history = await Promise.all(
-    timestamps.map(async (timestamp) => {
-      const priceData = await readFromContract<{ price?: bigint; timestamp?: bigint } | null>(
-        oracleContractId,
-        "price",
-        [
-          reflectorOtherAssetScVal(assetSymbol),
-          nativeToScVal(BigInt(timestamp), { type: "u64" }),
-        ],
-      ).catch(() => null);
+  const inflight = reflectorHistoryInflight.get(cacheKey);
+  if (inflight) {
+    return inflight;
+  }
 
-      if (!priceData?.price || !priceData.timestamp) {
-        return null;
-      }
+  const request = (async () => {
+    const decimals = Number(await readFromContract<number>(oracleContractId, "decimals"));
+    const timestamps = Array.from({ length: points }, (_, index) => startTimestamp + index * intervalSeconds);
 
-      const price = BigInt(priceData.price);
-      const observedTimestamp = Number(priceData.timestamp);
-      return {
-        timestamp: observedTimestamp,
-        price,
-        formatted: formatReflectorDecimal(price, decimals),
-      };
-    }),
-  );
+    const history = await Promise.all(
+      timestamps.map(async (timestamp) => {
+        const priceData = await readFromContract<{ price?: bigint; timestamp?: bigint } | null>(
+          oracleContractId,
+          "price",
+          [
+            reflectorOtherAssetScVal(assetSymbol),
+            nativeToScVal(BigInt(timestamp), { type: "u64" }),
+          ],
+        ).catch(() => null);
 
-  return {
-    decimals,
-    points: history.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry)),
-  };
+        if (!priceData?.price || !priceData.timestamp) {
+          return null;
+        }
+
+        const price = BigInt(priceData.price);
+        const observedTimestamp = Number(priceData.timestamp);
+        return {
+          timestamp: observedTimestamp,
+          price,
+          formatted: formatReflectorDecimal(price, decimals),
+        };
+      }),
+    );
+
+    const value = {
+      decimals,
+      points: history.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry)),
+    };
+
+    reflectorHistoryCache.set(cacheKey, value);
+    return value;
+  })();
+
+  reflectorHistoryInflight.set(cacheKey, request);
+  try {
+    return await request;
+  } finally {
+    reflectorHistoryInflight.delete(cacheKey);
+  }
 }

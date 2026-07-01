@@ -1,15 +1,20 @@
 import { amountUsdcToStroops, derivePositionArtifacts, marketIdToField, padHex32 } from "../../frontend/lib/proof-artifacts";
 import {
+  buildMerkleProof,
   buildReputationPublicInputs,
   buildSnapshot,
-  categoryCodeForField,
+  computeRecordCommitmentFallback,
   claimTypeCode,
   computeClaimMetric,
   createClaimDescriptor,
+  merkleDepth,
+  merkleLeafCount,
   serializeReputationProof,
+  verifyAttestedRecordSignature,
   stringSubjectToField,
   verifyPortableReputationClaim,
   windowDaysToField,
+  type AttestedReputationRecord,
   type ReputationRecordInput,
   type ReputationWindowDays,
 } from "@/lib/reputation";
@@ -86,6 +91,26 @@ function randomFieldSalt() {
   const bytes = new Uint8Array(31);
   crypto.getRandomValues(bytes);
   return `0x${bytesToHex(bytes)}`;
+}
+
+export function randomWitnessSalt() {
+  return randomFieldSalt();
+}
+
+export async function computeRecordCommitment(input: {
+  walletAddress: string;
+  marketId: string;
+  category: string;
+  amountInStroops: bigint;
+  payoutInStroops: bigint;
+  won: boolean;
+  claimedAt: number;
+  witnessSalt: string;
+}) {
+  return computeRecordCommitmentFallback({
+    ...input,
+    witnessSalt: BigInt(input.witnessSalt),
+  });
 }
 
 function randomBigIntBelow(maxExclusive: bigint) {
@@ -407,51 +432,77 @@ export async function generateReputationProof(input: {
   subjectId: string;
   category: string;
   windowDays: ReputationWindowDays;
+  attestedRecords: AttestedReputationRecord[];
+  attestorKeyId: string;
+  onProgress?: (message: string) => void;
   descriptor:
     | { claimType: "percentile"; band: 10 | 25 | 50 }
     | { claimType: "threshold"; metric: "roi" | "profit" | "winRate" | "participation" | "exposure"; threshold: string | number | bigint };
   records: ReputationRecordInput[];
 }) {
+  input.onProgress?.("Loading reputation circuit...");
   reputationCircuitPromise = loadCircuit("/circuits/reputation.json", reputationCircuitPromise);
   const reputationCircuit = await reputationCircuitPromise;
-  const baseSnapshot = buildSnapshot(input.records, {
+  input.onProgress?.("Building attested snapshot...");
+  const snapshot = buildSnapshot(input.records, {
     category: input.category,
     subjectId: input.subjectId,
     windowDays: input.windowDays,
+    attestedRecords: input.attestedRecords,
   });
   const claim = createClaimDescriptor(input.descriptor);
-  const { poseidon2Permutation } = await ensurePoseidon();
-  const [snapshotCommitment] = await poseidon2Permutation([
-    stringSubjectToField(baseSnapshot.subjectId),
-    categoryCodeForField(baseSnapshot.category),
-    windowDaysToField(baseSnapshot.windowDays),
-    baseSnapshot.witnessSecret,
-  ]);
-  const snapshot = {
-    ...baseSnapshot,
-    snapshotCommitment,
-  };
   const metric = computeClaimMetric(snapshot, claim);
+  const includedRecords = snapshot.records.slice(0, merkleLeafCount());
+  const paddedRecords = Array.from({ length: merkleLeafCount() }, (_, index) => includedRecords[index] ?? null);
+  input.onProgress?.("Preparing Merkle witnesses...");
+  const siblingPaths = paddedRecords.map((record) => {
+    if (!record?.recordCommitment) {
+      return Array.from({ length: merkleDepth() }, () => "0");
+    }
+    const leafIndex = snapshot.sortedCommitments.findIndex((value) => value === record.recordCommitment);
+    const proof = leafIndex >= 0 ? buildMerkleProof(snapshot.merkleTree, leafIndex) : [];
+    return Array.from({ length: merkleDepth() }, (_, proofIndex) => (proof[proofIndex] ?? 0n).toString());
+  });
+  const leafIndices = paddedRecords.map((record) => {
+    if (!record?.recordCommitment) {
+      return "0";
+    }
+    const leafIndex = snapshot.sortedCommitments.findIndex((value) => value === record.recordCommitment);
+    return String(Math.max(0, leafIndex));
+  });
 
+  input.onProgress?.("Preparing prover...");
   const noirModule = await import("@noir-lang/noir_js");
   const noir = new noirModule.Noir(reputationCircuit);
   const backendModule = await import("../node_modules/@aztec/bb.js/dest/browser/index.js");
   const backend = new backendModule.UltraHonkBackend(reputationCircuit.bytecode, { threads: 1 });
+  input.onProgress?.("Computing private witness...");
   const { witness } = await noir.execute({
     claim_type: claimTypeCode(claim).toString(),
-    category_code: categoryCodeForField(snapshot.category).toString(),
+    category_code: stringSubjectToField(snapshot.category).toString(),
     window_days: windowDaysToField(snapshot.windowDays).toString(),
     threshold_or_band: metric.publicThreshold.toString(),
     subject: stringSubjectToField(snapshot.subjectId).toString(),
-    snapshot_commitment: snapshot.snapshotCommitment.toString(),
+    snapshot_root: snapshot.snapshotRoot.toString(),
+    market_ids: paddedRecords.map((record) => record ? marketIdToField(record.marketId).toString() : "0"),
+    amounts: paddedRecords.map((record) => (record?.amountInStroops ?? 0n).toString()),
+    payouts: paddedRecords.map((record) => (record?.payoutInStroops ?? 0n).toString()),
+    won_bits: paddedRecords.map((record) => (record?.won ? 1n : 0n).toString()),
+    claimed_at: paddedRecords.map((record) => BigInt(record?.claimedAt ?? 0).toString()),
+    record_salts: paddedRecords.map((record) => (record?.witnessSalt ?? 0n).toString()),
+    included: paddedRecords.map((record) => (record ? "1" : "0")),
+    record_commitments: paddedRecords.map((record) => (record?.recordCommitment ?? 0n).toString()),
+    merkle_siblings: siblingPaths,
+    leaf_indices: leafIndices,
     metric_value: metric.privateMetric.toString(),
     eligible_count: metric.eligibleCount.toString(),
-    witness_secret: snapshot.witnessSecret.toString(),
     peer_scores: metric.peerScores.map((value: bigint) => value.toString()),
     peer_eligible: metric.peerEligible.map((value: bigint) => value.toString()),
   });
+  input.onProgress?.("Generating zero-knowledge proof...");
   const proof = await backend.generateProof(witness, proofOptions);
   await backend.destroy?.();
+  input.onProgress?.("Packaging portable credential...");
 
   return serializeReputationProof({
     claim,
@@ -460,17 +511,23 @@ export async function generateReputationProof(input: {
     envelope: {
       proofHex: `0x${bytesToHex(proof.proof)}`,
       publicInputsHex: buildReputationPublicInputs(snapshot, claim, metric).map((value) => `0x${value.toString(16)}`),
+      attestorKeyId: input.attestorKeyId,
     },
   });
 }
 
-export async function verifyReputationProof(serialized: string) {
+export async function verifyReputationProof(serialized: string, attestedRecords: AttestedReputationRecord[] = []) {
   const parsed = verifyPortableReputationClaim(serialized);
   reputationCircuitPromise = loadCircuit("/circuits/reputation.json", reputationCircuitPromise);
   const reputationCircuit = await reputationCircuitPromise;
   const backendModule = await import("../node_modules/@aztec/bb.js/dest/browser/index.js");
   const backend = new backendModule.UltraHonkBackend(reputationCircuit.bytecode, { threads: 1 });
-  const isValid = await backend.verifyProof(envelopeToProofData(parsed.envelope), proofOptions);
+  const proofValid = await backend.verifyProof(envelopeToProofData(parsed.envelope), proofOptions);
   await backend.destroy?.();
-  return { isValid, portableClaim: parsed };
+  const snapshotVerified = attestedRecords.length > 0
+    && attestedRecords.every((record) => (
+      record.attestorKeyId === parsed.publicClaim.attestorKeyId
+      && verifyAttestedRecordSignature(record)
+    ));
+  return { proofValid, snapshotVerified, isValid: proofValid && snapshotVerified, portableClaim: parsed };
 }
