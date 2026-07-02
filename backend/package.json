@@ -5,7 +5,21 @@
   "type": "module",
   "scripts": {
     "dev": "node --watch src/server.js",
-    "start": "node src/server.js"
+    "start": "node src/server.js",
+    "dev:coordinator": "node --watch src/server.js",
+    "start:coordinator": "node src/server.js",
+    "dev:mpc-node": "node --watch src/processes/mpc-node.js",
+    "start:mpc-node": "node src/processes/mpc-node.js",
+    "dev:mpc-node-1": "PORT=4101 MPC_NODE_INDEX=1 MPC_NODE_DB=aegis_mpc_node_1 node --watch src/processes/mpc-node.js",
+    "dev:mpc-node-2": "PORT=4102 MPC_NODE_INDEX=2 MPC_NODE_DB=aegis_mpc_node_2 node --watch src/processes/mpc-node.js",
+    "dev:mpc-node-3": "PORT=4103 MPC_NODE_INDEX=3 MPC_NODE_DB=aegis_mpc_node_3 node --watch src/processes/mpc-node.js",
+    "dev:mpc-node-4": "PORT=4104 MPC_NODE_INDEX=4 MPC_NODE_DB=aegis_mpc_node_4 node --watch src/processes/mpc-node.js",
+    "dev:mpc-node-5": "PORT=4105 MPC_NODE_INDEX=5 MPC_NODE_DB=aegis_mpc_node_5 node --watch src/processes/mpc-node.js",
+    "start:mpc-node-1": "PORT=4101 MPC_NODE_INDEX=1 MPC_NODE_DB=aegis_mpc_node_1 node src/processes/mpc-node.js",
+    "start:mpc-node-2": "PORT=4102 MPC_NODE_INDEX=2 MPC_NODE_DB=aegis_mpc_node_2 node src/processes/mpc-node.js",
+    "start:mpc-node-3": "PORT=4103 MPC_NODE_INDEX=3 MPC_NODE_DB=aegis_mpc_node_3 node src/processes/mpc-node.js",
+    "start:mpc-node-4": "PORT=4104 MPC_NODE_INDEX=4 MPC_NODE_DB=aegis_mpc_node_4 node src/processes/mpc-node.js",
+    "start:mpc-node-5": "PORT=4105 MPC_NODE_INDEX=5 MPC_NODE_DB=aegis_mpc_node_5 node src/processes/mpc-node.js"
   },
   "dependencies": {
     "@stellar/stellar-sdk": "^16.0.1",

@@ -5,6 +5,7 @@ import morgan from "morgan";
 import mongoose from "mongoose";
 import { randomBytes } from "node:crypto";
 import { loadEnv } from "./env.js";
+import { createMpcCluster } from "./services/mpc/node-store.js";
 import {
   Address,
   BASE_FEE,
@@ -17,7 +18,38 @@ import {
 } from "@stellar/stellar-sdk";
 import { Buffer } from "node:buffer";
 
-loadEnv({ preserve: ["PORT", "MONGODB_URI", "CORS_ORIGIN", "MARKET_CONTRACT_ID"] });
+loadEnv({
+  preserve: [
+    "PORT",
+    "MONGODB_URI",
+    "CORS_ORIGIN",
+    "STELLAR_RPC",
+    "STELLAR_NETWORK",
+    "MARKET_CONTRACT_ID",
+    "FINALIZE_CRON_MS",
+    "FINALIZER_SECRET_KEY",
+    "ADMIN_SECRET_KEY",
+    "USER2_SECRET_KEY",
+    "USER3_SECRET_KEY",
+    "REPUTATION_ATTESTOR_SECRET_KEY",
+    "SHARD_1_SECRET_KEY",
+    "SHARD_2_SECRET_KEY",
+    "SHARD_3_SECRET_KEY",
+    "SHARD_4_SECRET_KEY",
+    "SHARD_5_SECRET_KEY",
+    "MPC_COORDINATOR_DB",
+    "MPC_NODE_1_URL",
+    "MPC_NODE_2_URL",
+    "MPC_NODE_3_URL",
+    "MPC_NODE_4_URL",
+    "MPC_NODE_5_URL",
+    "MPC_NODE_1_DB",
+    "MPC_NODE_2_DB",
+    "MPC_NODE_3_DB",
+    "MPC_NODE_4_DB",
+    "MPC_NODE_5_DB",
+  ],
+});
 
 const PORT = Number(process.env.PORT ?? 4001);
 const MONGODB_URI = process.env.MONGODB_URI ?? "mongodb://127.0.0.1:27017/verdict";
@@ -26,6 +58,7 @@ const FINALIZE_CRON_MS = Number(process.env.FINALIZE_CRON_MS ?? 30000);
 const SHARD_COUNT = 5;
 const SHARD_THRESHOLD = 3;
 const FIELD_MODULUS = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001n;
+const mpcCluster = createMpcCluster();
 
 mongoose.set("strictQuery", true);
 
@@ -112,25 +145,6 @@ const reputationShareSchema = new mongoose.Schema(
 reputationShareSchema.index({ walletAddress: 1, version: 1 }, { unique: true });
 const ReputationShare = mongoose.model("ReputationShare", reputationShareSchema);
 
-const tallyShareSchema = new mongoose.Schema(
-  {
-    marketId: { type: String, required: true, index: true, trim: true },
-    commitment: { type: String, required: true, index: true, trim: true },
-    owner: { type: String, default: null, trim: true },
-    shardIndex: { type: Number, required: true, min: 1, max: SHARD_COUNT },
-    yesShare: { type: String, required: true, trim: true },
-    noShare: { type: String, required: true, trim: true },
-    shareSalt: { type: String, required: true, trim: true },
-    shareCommitment: { type: String, required: true, trim: true },
-    shareCommitmentRoot: { type: String, required: true, trim: true },
-    tallyTxHash: { type: String, required: true, trim: true },
-    createdAt: { type: Number, default: Date.now },
-  },
-  { timestamps: true },
-);
-tallyShareSchema.index({ marketId: 1, commitment: 1, shardIndex: 1 }, { unique: true });
-const TallyShare = mongoose.model("TallyShare", tallyShareSchema);
-
 const attestedRecordSchema = new mongoose.Schema(
   {
     walletAddress: { type: String, required: true, index: true, trim: true },
@@ -152,17 +166,6 @@ attestedRecordSchema.index(
   { unique: true },
 );
 const AttestedReputationRecord = mongoose.model("AttestedReputationRecord", attestedRecordSchema);
-
-const finalizationJobSchema = new mongoose.Schema(
-  {
-    marketId: { type: String, required: true, unique: true, index: true, trim: true },
-    status: { type: String, required: true, default: "queued", trim: true },
-    txHash: { type: String, default: null, trim: true },
-    error: { type: String, default: null },
-    updatedAt: { type: Number, default: Date.now },
-  },
-);
-const FinalizationJob = mongoose.model("FinalizationJob", finalizationJobSchema);
 
 const app = express();
 
@@ -458,28 +461,20 @@ async function submitFinalize(marketId, aggregate) {
 }
 
 async function aggregateMarketShares(marketId) {
-  const rows = await TallyShare.find({ marketId: normalizeHex(marketId) }).lean();
-  const byCommitment = new Map();
-  for (const row of rows) {
-    const entry = byCommitment.get(row.commitment) ?? {
-      commitment: row.commitment,
-      shareCommitmentRoot: row.shareCommitmentRoot,
-      shards: new Map(),
-    };
-    entry.shards.set(row.shardIndex, row);
-    byCommitment.set(row.commitment, entry);
-  }
-
   let yesTotal = 0n;
   let noTotal = 0n;
   let talliedCommitmentCount = 0;
-  for (const entry of byCommitment.values()) {
-    if (entry.shards.size !== SHARD_COUNT) continue;
-    talliedCommitmentCount += 1;
-    for (const row of entry.shards.values()) {
-      yesTotal = modField(yesTotal + BigInt(row.yesShare));
-      noTotal = modField(noTotal + BigInt(row.noShare));
+  const packets = await mpcCluster.listPacketsForMarket(normalizeHex(marketId));
+
+  for (const packet of packets) {
+    const reconstructed = await mpcCluster.reconstructPacket(packet.packetId);
+    if (!reconstructed) {
+      continue;
     }
+
+    talliedCommitmentCount += 1;
+    yesTotal = modField(yesTotal + BigInt(reconstructed.yesShare));
+    noTotal = modField(noTotal + BigInt(reconstructed.noShare));
   }
 
   const state = await loadMarketState(marketId);
@@ -493,7 +488,7 @@ async function aggregateMarketShares(marketId) {
     noTotal,
     talliedCommitmentCount,
     aggregateCommitment,
-    storedCommitmentCount: byCommitment.size,
+    storedCommitmentCount: packets.length,
     completeCommitmentCount: talliedCommitmentCount,
   };
 }
@@ -914,8 +909,15 @@ app.post("/tally-shares", async (req, res) => {
       : [parseSharePacket(body)];
     const saved = [];
     for (const packet of packets) {
-      const row = await TallyShare.create(packet);
-      saved.push({ commitment: row.commitment, shardIndex: row.shardIndex });
+      const row = await mpcCluster.storePacket(packet);
+      saved.push({
+        packetId: row.packetId,
+        marketId: packet.marketId,
+        commitment: packet.commitment,
+        shardIndex: packet.shardIndex,
+        nodeCount: row.nodeCount,
+        threshold: row.threshold,
+      });
     }
     return res.status(201).json({ ok: true, saved });
   } catch (error) {
@@ -927,22 +929,7 @@ app.post("/tally-shares", async (req, res) => {
 
 app.get("/tally-shares/:marketId/status", async (req, res) => {
   const marketId = normalizeHex(req.params.marketId);
-  const rows = await TallyShare.find({ marketId }).lean();
-  const commitments = new Map();
-  for (const row of rows) {
-    const current = commitments.get(row.commitment) ?? [];
-    current.push(row.shardIndex);
-    commitments.set(row.commitment, current);
-  }
-  return res.json({
-    marketId,
-    commitmentCount: commitments.size,
-    completeCommitmentCount: Array.from(commitments.values()).filter((shards) => new Set(shards).size === SHARD_COUNT).length,
-    commitments: Array.from(commitments.entries()).map(([commitment, shards]) => ({
-      commitment,
-      shards: Array.from(new Set(shards)).sort((a, b) => a - b),
-    })),
-  });
+  return res.json(await mpcCluster.getMarketStatus(marketId));
 });
 
 app.get("/tally-shares/:marketId/aggregate", async (req, res) => {
@@ -982,38 +969,22 @@ async function finalizeDueMarkets() {
     const deadline = Number(asBigInt(state.tally_deadline ?? 0));
     if (!deadline || now < deadline) continue;
 
-    await FinalizationJob.findOneAndUpdate(
-      { marketId },
-      { $set: { marketId, status: "finalizing", error: null, updatedAt: Date.now() } },
-      { upsert: true },
-    );
+    await mpcCluster.upsertJob(marketId, { status: "finalizing", error: null });
 
     try {
       const aggregate = await aggregateMarketShares(marketId);
       if (aggregate.talliedCommitmentCount === 0) {
-        await FinalizationJob.findOneAndUpdate(
-          { marketId },
-          { $set: { status: "skipped_no_complete_tallies", error: null, updatedAt: Date.now() } },
-          { upsert: true },
-        );
+        await mpcCluster.upsertJob(marketId, { status: "skipped_no_complete_tallies", error: null });
         results.push({ marketId, status: "skipped_no_complete_tallies" });
         continue;
       }
 
       const txHash = await submitFinalize(marketId, aggregate);
-      await FinalizationJob.findOneAndUpdate(
-        { marketId },
-        { $set: { status: "finalized", txHash, error: null, updatedAt: Date.now() } },
-        { upsert: true },
-      );
+      await mpcCluster.upsertJob(marketId, { status: "finalized", txHash, error: null });
       results.push({ marketId, status: "finalized", txHash });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await FinalizationJob.findOneAndUpdate(
-        { marketId },
-        { $set: { status: "error", error: message, updatedAt: Date.now() } },
-        { upsert: true },
-      );
+      await mpcCluster.upsertJob(marketId, { status: "error", error: message });
       results.push({ marketId, status: "error", error: message });
     }
   }
@@ -1050,6 +1021,7 @@ app.post("/jobs/finalize-due-markets", async (_req, res) => {
 
 async function start() {
   await mongoose.connect(MONGODB_URI);
+  await mpcCluster.ready();
   app.listen(PORT, () => {
     console.log(`Profile backend listening on http://localhost:${PORT}`);
   });
