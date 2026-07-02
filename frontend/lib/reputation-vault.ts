@@ -58,7 +58,7 @@ const SYNC_MODE_KEY_PREFIX = "aegis-reputation-sync-mode-v1:";
 const LOCAL_SNAPSHOT_KEY_PREFIX = "aegis-reputation-snapshot-v1:";
 const LEGACY_SYNC_MODE_KEY_PREFIX = "verdict-reputation-sync-mode-v1:";
 const LEGACY_LOCAL_SNAPSHOT_KEY_PREFIX = "verdict-reputation-snapshot-v1:";
-const BACKEND_BASE_URL = process.env.NEXT_PUBLIC_PROFILE_BACKEND_URL ?? "http://127.0.0.1:4001";
+const BACKEND_BASE_URL = process.env.NEXT_PUBLIC_PROFILE_BACKEND_URL ?? "http://127.0.0.1:4003";
 
 function syncModeKey(walletAddress: string) {
   return `${SYNC_MODE_KEY_PREFIX}${walletAddress.toLowerCase()}`;

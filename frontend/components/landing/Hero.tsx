@@ -123,7 +123,7 @@ export const Hero = () => (
                 {[
                     {
                         title: 'Private by Default',
-                        desc: 'Bet intent stays hidden. Only the final aggregate outcome surfaces after expiry and resolution.',
+                        desc: 'Positions stay hidden, even after expiry.',
                         icon: Play
                     },
                     {

@@ -83,6 +83,17 @@ export function MarketCard({ market, onClick }: MarketCardProps) {
     const yesResolvedValue = market.resolved ? (market.outcome === "YES" ? 1 : 0) : null;
     const noResolvedValue = market.resolved ? (market.outcome === "NO" ? 1 : 0) : null;
     const categoryArt = marketCategoryArt(market.category);
+    const resolvedOutcomeIsYes = market.outcome === "YES";
+    const resolvedTone = market.resolved
+        ? resolvedOutcomeIsYes
+            ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
+            : "bg-rose-500/10 border-rose-500/20 text-rose-400"
+        : "bg-violet-500/10 border-violet-500/20 text-violet-300";
+    const resolvedStripTone = market.resolved
+        ? resolvedOutcomeIsYes
+            ? "border-emerald-500/25 bg-emerald-500/[0.07]"
+            : "border-rose-500/25 bg-rose-500/[0.07]"
+        : "";
 
     const hasPosition = useMemo(() => {
         try {
@@ -125,7 +136,7 @@ export function MarketCard({ market, onClick }: MarketCardProps) {
                     </h3>
                 </div>
                 <div className="flex flex-col items-end gap-2 shrink-0">
-                    <div className={`px-3 py-1 rounded-full border text-[10px] uppercase font-black tracking-widest whitespace-nowrap ${market.resolved ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400" : "bg-violet-500/10 border-violet-500/20 text-violet-300"}`}>
+                    <div className={`px-3 py-1 rounded-full border text-[10px] uppercase font-black tracking-widest whitespace-nowrap ${resolvedTone}`}>
                         {status}
                     </div>
                     {hasPosition && (
@@ -139,7 +150,7 @@ export function MarketCard({ market, onClick }: MarketCardProps) {
 
             <div className="flex flex-wrap sm:flex-nowrap items-center gap-3 mb-7">
                 {market.resolved ? (
-                    <div className="flex flex-1 items-center rounded-xl border border-emerald-500/25 bg-emerald-500/[0.07] px-4 py-3.5">
+                    <div className={`flex flex-1 items-center rounded-xl border px-4 py-3.5 ${resolvedStripTone}`}>
                         <div className="flex w-full items-center justify-between gap-3 text-sm font-semibold">
                             <span className={market.outcome === "YES" ? "text-emerald-300" : "text-rose-300"}>
                                 Resolved: {market.outcome}
@@ -171,7 +182,13 @@ export function MarketCard({ market, onClick }: MarketCardProps) {
                 <span>{market.commitmentCount} position{market.commitmentCount !== 1 ? 's' : ''}</span>
                 <span className="text-white/20">•</span>
                 <div className="flex items-center gap-2">
-                    <div className={`w-2 h-2 rounded-full ${market.resolved ? 'bg-violet-400' : 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]'}`} />
+                    <div className={`w-2 h-2 rounded-full ${
+                        market.resolved
+                            ? market.outcome === "YES"
+                                ? "bg-emerald-400"
+                                : "bg-rose-400"
+                            : "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]"
+                    }`} />
                     <span className="text-white/80">
                         <LiveCountdown endTimestamp={market.endTimestamp} resolved={market.resolved} />
                     </span>

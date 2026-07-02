@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import { Navbar } from "@/components/landing/Navbar";
-import { formatUsdc, mapMarketSummary, marketStatusLabel, payoutForPosition, positionStatusLabel } from "@/lib/blind-market";
+import { expectedPayoutForPosition, formatUsdc, mapMarketSummary, marketStatusLabel, payoutForPosition, positionStatusLabel } from "@/lib/blind-market";
 import type { BlindMarketSummary, BlindPositionRecord } from "@/lib/types";
 import { claimWinningsWithPrivyWallet, getPrivyStellarWallet, loadMarketIds, loadMarketView, submitPrivateTallyWithPrivyWallet, submitTallySharesToBackend, type MarketView } from "@/lib/stellar";
 import { usePrivy } from "@privy-io/react-auth";
@@ -52,6 +53,8 @@ export default function PositionsPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [actionError, setActionError] = useState("");
+  const [expandedMarketGroup, setExpandedMarketGroup] = useState<string | null>(null);
+  const [expandedPositionDetails, setExpandedPositionDetails] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
   const stellarWallet = getPrivyStellarWallet(user);
 
@@ -214,10 +217,11 @@ export default function PositionsPage() {
           .filter((position) => position.side === "NO")
           .reduce((sum, position) => sum + BigInt(position.amountInStroops), 0n);
         const totalClaimable = positions.reduce((sum, position) => {
-          if (!market || position.claimedAt) {
+          if (position.claimedAt) {
             return sum;
           }
-          return sum + payoutForPosition(market, BigInt(position.amountInStroops));
+          const payout = expectedPayoutForPosition(position, market);
+          return payout === null ? sum : sum + payout;
         }, 0n);
 
         return {
@@ -259,7 +263,13 @@ export default function PositionsPage() {
   }
 
   function claimablePositionsForGroup(group: PositionGroup) {
-    if (!group.market || !group.market.resolved || !group.market.outcome) {
+    if (
+      !group.market
+      || !group.market.resolved
+      || !group.market.outcome
+      || group.market.winningSideTotal <= 0n
+      || group.market.distributablePot <= 0n
+    ) {
       return [];
     }
 
@@ -367,7 +377,6 @@ export default function PositionsPage() {
       amountInStroops: BigInt(position.amountInStroops),
       salt: position.salt,
       commitment: position.commitment,
-      nullifier: position.nullifier,
       outcome: group.market.outcome === "YES",
       distributablePot: group.market.distributablePot,
       winningSideTotal: group.market.winningSideTotal,
@@ -384,10 +393,11 @@ export default function PositionsPage() {
     const claimedAt = Date.now();
     setSavedPositions((current) => current.map((entry) => (
       entry.commitment === position.commitment
-        ? { ...entry, claimTxHash: tx.hash, claimedAt, reputationAttestationStatus: "pending" }
+        ? { ...entry, nullifier: proof.nullifier, claimTxHash: tx.hash, claimedAt, reputationAttestationStatus: "pending" }
         : entry
     )));
     await markClaimedPosition(walletAddress, position.commitment, {
+      nullifier: proof.nullifier,
       claimTxHash: tx.hash,
       claimedAt,
       reputationAttestationStatus: "pending",
@@ -408,7 +418,7 @@ export default function PositionsPage() {
     await upsertPrivateReputationWitness(walletAddress, {
       marketId: group.marketId,
       commitment: position.commitment,
-      nullifier: position.nullifier,
+      nullifier: proof.nullifier,
       side: position.side,
       amountInStroops: position.amountInStroops,
       payoutInStroops: payoutInStroops.toString(),
@@ -425,7 +435,7 @@ export default function PositionsPage() {
         walletAddress,
         marketId: group.marketId,
         commitment: position.commitment,
-        nullifier: position.nullifier,
+        nullifier: proof.nullifier,
         claimTxHash: tx.hash,
         category: group.market.category,
         recordCommitment,
@@ -436,7 +446,7 @@ export default function PositionsPage() {
       await upsertPrivateReputationWitness(walletAddress, {
         marketId: group.marketId,
         commitment: position.commitment,
-        nullifier: position.nullifier,
+        nullifier: proof.nullifier,
         side: position.side,
         amountInStroops: position.amountInStroops,
         payoutInStroops: payoutInStroops.toString(),
@@ -632,8 +642,15 @@ export default function PositionsPage() {
             ) : (
               <section className="space-y-4">
                 {groupedPositions.map((group) => (
-                  <details key={group.marketId} className="group rounded-[28px] border border-white/5 bg-[#121214]/60 p-5 sm:p-6">
-                    <summary className="list-none cursor-pointer">
+                  <div key={group.marketId} className="rounded-[28px] border border-white/5 bg-[#121214]/60 p-5 sm:p-6">
+                    <button
+                      type="button"
+                      onClick={() => setExpandedMarketGroup((current) => (
+                        current === group.marketId ? null : group.marketId
+                      ))}
+                      className="w-full cursor-pointer text-left"
+                      aria-expanded={expandedMarketGroup === group.marketId}
+                    >
                       <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
@@ -664,125 +681,214 @@ export default function PositionsPage() {
                             <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/25">Claimable</p>
                             <p className="mt-2 text-lg font-black text-white">{group.market?.resolved ? formatUsdc(group.totalClaimable) : "Pending"}</p>
                           </div>
-                          <div className="flex h-10 w-10 items-center justify-center rounded-full border border-violet-500/15 bg-violet-500/10 text-violet-200/70 transition-transform group-open:rotate-180">
-                            <ChevronDown className="h-4 w-4" />
-                          </div>
-                        </div>
-                      </div>
-                    </summary>
-
-                    <div className="mt-6 space-y-4 border-t border-white/6 pt-5">
-                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                        <div className="flex flex-wrap items-center gap-5 text-sm text-white/55">
-                          <div>
-                            <span className="text-white/30">YES</span>
-                            <span className="ml-2 font-semibold text-white">{formatUsdc(group.yesCommitted)}</span>
-                          </div>
-                          <div>
-                            <span className="text-white/30">NO</span>
-                            <span className="ml-2 font-semibold text-white">{formatUsdc(group.noCommitted)}</span>
-                          </div>
-                          <div>
-                            <span className="text-white/30">Commitments</span>
-                            <span className="ml-2 font-semibold text-white">{group.positions.length}</span>
-                          </div>
-                        </div>
-
-                        <div className="flex flex-wrap items-center gap-2">
-                          {pendingTallyPositionsForGroup(group).length > 0 || retryableTallyPositionsForGroup(group).length > 0 ? (
-                            <button
-                              onClick={(event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                void handleBatchTally(group);
-                              }}
-                              disabled={busyAction === `tally:${group.marketId}`}
-                              className="inline-flex h-10 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-white px-4 text-[11px] font-black uppercase tracking-[0.18em] text-black transition-all hover:bg-white/90 disabled:opacity-60"
-                            >
-                              {busyAction === `tally:${group.marketId}` ? "Tallying..." : `Tally ${pendingTallyPositionsForGroup(group).length + retryableTallyPositionsForGroup(group).length}`}
-                            </button>
-                          ) : null}
-                          {claimablePositionsForGroup(group).length > 0 ? (
-                            <button
-                              onClick={(event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                void handleBatchClaim(group);
-                              }}
-                              disabled={busyAction === `claim:${group.marketId}`}
-                              className="inline-flex h-10 shrink-0 items-center justify-center rounded-xl border border-emerald-500/15 bg-emerald-500/10 px-4 text-[11px] font-black uppercase tracking-[0.18em] text-emerald-50 transition-all hover:bg-emerald-500/15 disabled:opacity-60"
-                            >
-                              {busyAction === `claim:${group.marketId}` ? "Claiming..." : `Claim ${claimablePositionsForGroup(group).length}`}
-                            </button>
-                          ) : null}
-                          <Link
-                            href={`/dashboard?market=${group.marketId}`}
-                            className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl border border-violet-500/15 bg-violet-500/10 px-4 text-[11px] font-black uppercase tracking-[0.18em] text-violet-50 transition-all hover:bg-violet-500/15"
+                          <motion.div
+                            animate={{ rotate: expandedMarketGroup === group.marketId ? 180 : 0 }}
+                            transition={{ duration: 0.22, ease: "easeOut" }}
+                            className="flex h-10 w-10 items-center justify-center rounded-full border border-violet-500/15 bg-violet-500/10 text-violet-200/70"
                           >
-                            Open Market
-                            <MoveRight className="h-4 w-4" />
-                          </Link>
+                            <ChevronDown className="h-4 w-4" />
+                          </motion.div>
                         </div>
                       </div>
+                    </button>
 
-                      <div className="rounded-2xl border border-white/6 bg-black/20">
-                        {group.positions.map((position, index) => {
-                          const amount = BigInt(position.amountInStroops);
-                          const payout = group.market ? payoutForPosition(group.market, amount) : 0n;
-
-                          return (
-                            <div
-                              key={position.commitment}
-                              className={`px-4 py-4 sm:px-5 ${index < group.positions.length - 1 ? "border-b border-white/6" : ""}`}
-                            >
-                              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                                <div className="min-w-0">
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <span className="rounded-full border border-violet-500/15 bg-violet-500/10 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-[0.2em] text-violet-100/70">
-                                      {position.side}
-                                    </span>
-                                    <span className="text-[10px] font-black uppercase tracking-[0.2em] text-white/30">
-                                      Commit #{index + 1}
-                                    </span>
-                                    <span className="text-[10px] font-black uppercase tracking-[0.2em] text-white/30">
-                                      {positionStatusLabel(position, group.market)}
-                                    </span>
-                                  </div>
-                                  <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
-                                    <div>
-                                      <span className="text-white/30">Amount</span>
-                                      <span className="ml-2 font-semibold text-white">{formatUsdc(amount)}</span>
-                                    </div>
-                                    <div>
-                                      <span className="text-white/30">Expected Payout</span>
-                                      <span className="ml-2 font-semibold text-white">{group.market?.resolved ? formatUsdc(payout) : "Pending"}</span>
-                                    </div>
-                                  </div>
+                    <AnimatePresence initial={false}>
+                      {expandedMarketGroup === group.marketId ? (
+                        <motion.div
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: "auto", opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          transition={{ duration: 0.26, ease: "easeOut" }}
+                          className="overflow-hidden"
+                        >
+                          <div className="mt-6 space-y-4 border-t border-white/6 pt-5">
+                            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                              <div className="flex flex-wrap items-center gap-5 text-sm text-white/55">
+                                <div>
+                                  <span className="text-white/30">YES</span>
+                                  <span className="ml-2 font-semibold text-white">{formatUsdc(group.yesCommitted)}</span>
                                 </div>
+                                <div>
+                                  <span className="text-white/30">NO</span>
+                                  <span className="ml-2 font-semibold text-white">{formatUsdc(group.noCommitted)}</span>
+                                </div>
+                                <div>
+                                  <span className="text-white/30">Commitments</span>
+                                  <span className="ml-2 font-semibold text-white">{group.positions.length}</span>
+                                </div>
+                              </div>
 
-                                {["tally_submitted", "queued_for_auto_finalization", "finalizing"].includes(position.tallyStatus ?? "") && !position.claimTxHash ? (
-                                  <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/15 bg-emerald-500/10 px-3 py-1">
-                                    <ShieldCheck className="h-3.5 w-3.5 text-emerald-300" />
-                                    <span className="text-[10px] font-black uppercase tracking-[0.18em] text-emerald-200">Queued for Auto-Finalization</span>
-                                  </div>
-                                ) : position.tallyStatus === "share_upload_failed" ? (
-                                  <div className="inline-flex items-center gap-2 rounded-full border border-amber-500/15 bg-amber-500/10 px-3 py-1">
-                                    <ShieldCheck className="h-3.5 w-3.5 text-amber-300" />
-                                    <span className="text-[10px] font-black uppercase tracking-[0.18em] text-amber-200">Share Upload Failed</span>
-                                  </div>
-                                ) : position.claimTxHash ? (
-                                  <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-3 py-1">
-                                    <Trophy className="h-3.5 w-3.5 text-white/55" />
-                                    <span className="text-[10px] font-black uppercase tracking-[0.18em] text-white/70">Claimed</span>
-                                  </div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                {pendingTallyPositionsForGroup(group).length > 0 || retryableTallyPositionsForGroup(group).length > 0 ? (
+                                  <button
+                                    onClick={(event) => {
+                                      event.preventDefault();
+                                      event.stopPropagation();
+                                      void handleBatchTally(group);
+                                    }}
+                                    disabled={busyAction === `tally:${group.marketId}`}
+                                    className="inline-flex h-10 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-white px-4 text-[11px] font-black uppercase tracking-[0.18em] text-black transition-all hover:bg-white/90 disabled:opacity-60"
+                                  >
+                                    {busyAction === `tally:${group.marketId}` ? "Tallying..." : `Tally ${pendingTallyPositionsForGroup(group).length + retryableTallyPositionsForGroup(group).length}`}
+                                  </button>
                                 ) : null}
+                                {claimablePositionsForGroup(group).length > 0 ? (
+                                  <button
+                                    onClick={(event) => {
+                                      event.preventDefault();
+                                      event.stopPropagation();
+                                      void handleBatchClaim(group);
+                                    }}
+                                    disabled={busyAction === `claim:${group.marketId}`}
+                                    className="inline-flex h-10 shrink-0 items-center justify-center rounded-xl border border-emerald-500/15 bg-emerald-500/10 px-4 text-[11px] font-black uppercase tracking-[0.18em] text-emerald-50 transition-all hover:bg-emerald-500/15 disabled:opacity-60"
+                                  >
+                                    {busyAction === `claim:${group.marketId}` ? "Claiming..." : `Claim ${claimablePositionsForGroup(group).length}`}
+                                  </button>
+                                ) : null}
+                                <Link
+                                  href={`/dashboard?market=${group.marketId}`}
+                                  className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-xl border border-violet-500/15 bg-violet-500/10 px-4 text-[11px] font-black uppercase tracking-[0.18em] text-violet-50 transition-all hover:bg-violet-500/15"
+                                >
+                                  Open Market
+                                  <MoveRight className="h-4 w-4" />
+                                </Link>
                               </div>
                             </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  </details>
+
+                            <div className="rounded-2xl border border-white/6 bg-black/20">
+                              {group.positions.map((position, index) => {
+                                const amount = BigInt(position.amountInStroops);
+                                const payout = expectedPayoutForPosition(position, group.market);
+
+                                return (
+                                  <div
+                                    key={position.commitment}
+                                    className={`px-4 py-4 sm:px-5 ${index < group.positions.length - 1 ? "border-b border-white/6" : ""}`}
+                                  >
+                                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                      <div className="min-w-0">
+                                        <div className="flex flex-wrap items-center gap-2">
+                                          <span className="rounded-full border border-violet-500/15 bg-violet-500/10 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-[0.2em] text-violet-100/70">
+                                            {position.side}
+                                          </span>
+                                          <span className="text-[10px] font-black uppercase tracking-[0.2em] text-white/30">
+                                            Commit #{index + 1}
+                                          </span>
+                                          <span className="text-[10px] font-black uppercase tracking-[0.2em] text-white/30">
+                                            {positionStatusLabel(position, group.market)}
+                                          </span>
+                                        </div>
+                                        <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
+                                          <div>
+                                            <span className="text-white/30">Amount</span>
+                                            <span className="ml-2 font-semibold text-white">{formatUsdc(amount)}</span>
+                                          </div>
+                                          <div>
+                                            <span className="text-white/30">Expected Payout</span>
+                                            <span className="ml-2 font-semibold text-white">{group.market?.resolved ? (payout !== null ? formatUsdc(payout) : "Not eligible") : "Pending"}</span>
+                                          </div>
+                                        </div>
+                                      </div>
+
+                                      {!group.market?.resolved && ["tally_submitted", "queued_for_auto_finalization", "finalizing"].includes(position.tallyStatus ?? "") && !position.claimTxHash ? (
+                                        <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/15 bg-emerald-500/10 px-3 py-1">
+                                          <ShieldCheck className="h-3.5 w-3.5 text-emerald-300" />
+                                          <span className="text-[10px] font-black uppercase tracking-[0.18em] text-emerald-200">Queued for Auto-Finalization</span>
+                                        </div>
+                                      ) : position.tallyStatus === "share_upload_failed" ? (
+                                        <div className="inline-flex items-center gap-2 rounded-full border border-amber-500/15 bg-amber-500/10 px-3 py-1">
+                                          <ShieldCheck className="h-3.5 w-3.5 text-amber-300" />
+                                          <span className="text-[10px] font-black uppercase tracking-[0.18em] text-amber-200">Share Upload Failed</span>
+                                        </div>
+                                      ) : position.claimTxHash ? (
+                                        <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-3 py-1">
+                                          <Trophy className="h-3.5 w-3.5 text-white/55" />
+                                          <span className="text-[10px] font-black uppercase tracking-[0.18em] text-white/70">Claimed</span>
+                                        </div>
+                                      ) : null}
+                                    </div>
+                                    <div className="mt-4 overflow-hidden rounded-2xl border border-white/6 bg-white/[0.02]">
+                                      <button
+                                        type="button"
+                                        onClick={(event) => {
+                                          event.preventDefault();
+                                          event.stopPropagation();
+                                          setExpandedPositionDetails((current) => (
+                                            current === position.commitment ? null : position.commitment
+                                          ));
+                                        }}
+                                        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-[10px] font-black uppercase tracking-[0.18em] text-white/55 transition-colors hover:bg-white/[0.03] hover:text-white/75"
+                                        aria-expanded={expandedPositionDetails === position.commitment}
+                                      >
+                                        <span>Advanced details</span>
+                                        <motion.span
+                                          animate={{ rotate: expandedPositionDetails === position.commitment ? 180 : 0 }}
+                                          transition={{ duration: 0.2, ease: "easeOut" }}
+                                          className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-white/8 bg-black/20"
+                                        >
+                                          <ChevronDown className="h-3.5 w-3.5" />
+                                        </motion.span>
+                                      </button>
+                                      <AnimatePresence initial={false}>
+                                        {expandedPositionDetails === position.commitment ? (
+                                          <motion.div
+                                            initial={{ height: 0, opacity: 0 }}
+                                            animate={{ height: "auto", opacity: 1 }}
+                                            exit={{ height: 0, opacity: 0 }}
+                                            transition={{ duration: 0.24, ease: "easeOut" }}
+                                            className="overflow-hidden border-t border-white/6"
+                                          >
+                                            <div className="grid gap-3 px-4 py-4 text-[11px]">
+                                              <div>
+                                                <span className="mb-1 block text-[9px] font-black uppercase tracking-[0.2em] text-white/25">Commitment Hash</span>
+                                                <p className="font-mono break-all text-white/60">{position.commitment}</p>
+                                              </div>
+                                              <div>
+                                                <span className="mb-1 block text-[9px] font-black uppercase tracking-[0.2em] text-white/25">Nullifier</span>
+                                                <p className="font-mono break-all text-white/60">{position.nullifier}</p>
+                                              </div>
+                                              <div>
+                                                <span className="mb-1 block text-[9px] font-black uppercase tracking-[0.2em] text-white/25">Salt</span>
+                                                <p className="font-mono break-all text-white/60">{position.salt}</p>
+                                              </div>
+                                              {position.commitTxHash ? (
+                                                <div>
+                                                  <span className="mb-1 block text-[9px] font-black uppercase tracking-[0.2em] text-white/25">Commit Tx Hash</span>
+                                                  <p className="font-mono break-all text-white/60">{position.commitTxHash}</p>
+                                                </div>
+                                              ) : null}
+                                              {position.tallyTxHash ? (
+                                                <div>
+                                                  <span className="mb-1 block text-[9px] font-black uppercase tracking-[0.2em] text-white/25">Tally Tx Hash</span>
+                                                  <p className="font-mono break-all text-white/60">{position.tallyTxHash}</p>
+                                                </div>
+                                              ) : null}
+                                              {position.claimTxHash ? (
+                                                <div>
+                                                  <span className="mb-1 block text-[9px] font-black uppercase tracking-[0.2em] text-white/25">Claim Tx Hash</span>
+                                                  <p className="font-mono break-all text-white/60">{position.claimTxHash}</p>
+                                                </div>
+                                              ) : null}
+                                              {position.shareCommitmentRoot ? (
+                                                <div>
+                                                  <span className="mb-1 block text-[9px] font-black uppercase tracking-[0.2em] text-white/25">Share Commitment Root</span>
+                                                  <p className="font-mono break-all text-white/60">{position.shareCommitmentRoot}</p>
+                                                </div>
+                                              ) : null}
+                                            </div>
+                                          </motion.div>
+                                        ) : null}
+                                      </AnimatePresence>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </motion.div>
+                      ) : null}
+                    </AnimatePresence>
+                  </div>
                 ))}
               </section>
             )}

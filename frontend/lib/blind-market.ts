@@ -142,10 +142,24 @@ export function positionStatusLabel(position: BlindPositionRecord, market: Blind
   if (position.claimedAt) {
     return "Claimed";
   }
+  const positionTallied = position.tallyStatus === "tally_submitted"
+    || position.tallyStatus === "queued_for_auto_finalization"
+    || position.tallyStatus === "finalizing"
+    || Boolean(position.talliedAt);
   if (market?.resolved) {
-    return position.tallyStatus === "tally_submitted" || Boolean(position.talliedAt)
-      ? "Claim available"
-      : "Missed tally window";
+    if (!positionTallied) {
+      return "Missed tally window";
+    }
+    if (market.outcome === null) {
+      return "Settled";
+    }
+    if (position.side !== market.outcome) {
+      return "Lost";
+    }
+    if (market.winningSideTotal <= 0n || market.distributablePot <= 0n) {
+      return "No payout";
+    }
+    return "Claim available";
   }
   if (position.tallyStatus === "tally_submitted") {
     return "Queued for auto-finalization";
@@ -196,4 +210,27 @@ export function payoutForPosition(summary: BlindMarketSummary, amountInStroops: 
     return BigInt(0);
   }
   return (amountInStroops * summary.distributablePot) / summary.winningSideTotal;
+}
+
+export function expectedPayoutForPosition(position: BlindPositionRecord, market: BlindMarketSummary | null) {
+  if (!market?.resolved || market.outcome === null) {
+    return null;
+  }
+
+  const positionTallied = position.tallyStatus === "tally_submitted"
+    || position.tallyStatus === "queued_for_auto_finalization"
+    || position.tallyStatus === "finalizing"
+    || Boolean(position.talliedAt);
+
+  if (!positionTallied) {
+    return null;
+  }
+  if (position.side !== market.outcome) {
+    return null;
+  }
+  if (market.winningSideTotal <= 0n || market.distributablePot <= 0n) {
+    return null;
+  }
+
+  return payoutForPosition(market, BigInt(position.amountInStroops));
 }

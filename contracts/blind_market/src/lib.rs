@@ -510,17 +510,23 @@ impl BlindMarket {
         let resolved_conditions = Self::resolve_market_conditions(&env, &config);
         let outcome = Self::combine_condition_results(&config, &resolved_conditions);
         let winning_side_total = if outcome { yes_total } else { no_total };
-        assert!(winning_side_total > 0, "winning total must be positive");
-        assert!(
-            winning_side_total <= tallied_settlement_pot,
-            "winning total exceeds collateral",
-        );
 
         let oracle_price = resolved_conditions.0.observed_price;
-        let fee_amount =
-            (tallied_settlement_pot * config.fee_bps as i128) / QUOTE_SCALE_BPS;
         let missed_tally_collateral = state.total_locked_collateral - tallied_settlement_pot;
-        let treasury_amount = missed_tally_collateral + fee_amount;
+
+        // If nobody bet on the winning side, the entire pot is unclaimable and
+        // goes to treasury along with any missed-tally collateral and fees.
+        let (distributable_pot, treasury_amount) = if winning_side_total == 0 {
+            (0i128, state.total_locked_collateral)
+        } else {
+            assert!(
+                winning_side_total <= tallied_settlement_pot,
+                "winning total exceeds collateral",
+            );
+            let fee_amount =
+                (tallied_settlement_pot * config.fee_bps as i128) / QUOTE_SCALE_BPS;
+            (tallied_settlement_pot - fee_amount, missed_tally_collateral + fee_amount)
+        };
 
         state.resolved = true;
         state.claims_finalized = CLAIMS_FINALIZED_TRUE;
@@ -534,7 +540,7 @@ impl BlindMarket {
         state.resolved_condition_3 = resolved_conditions.2;
         state.resolved_condition_4 = resolved_conditions.3;
         state.resolved_condition_5 = resolved_conditions.4;
-        state.distributable_pot = tallied_settlement_pot - fee_amount;
+        state.distributable_pot = distributable_pot;
         state.winning_side_total = winning_side_total;
         state.aggregate_commitment = aggregate_commitment.clone();
         state.missed_tally_collateral = missed_tally_collateral;
@@ -555,7 +561,7 @@ impl BlindMarket {
                 market_id,
                 outcome,
                 oracle_price,
-                state.distributable_pot,
+                distributable_pot,
                 winning_side_total,
                 aggregate_commitment,
                 treasury_amount,

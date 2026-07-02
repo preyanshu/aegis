@@ -157,6 +157,29 @@
     @apply bg-background text-foreground selection:bg-primary selection:text-white;
     font-family: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
   }
+  /* Global Scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 10px;
+    transition: background 0.3s ease;
+  }
+
+  :hover::-webkit-scrollbar-thumb {
+    background: rgba(168, 85, 247, 0.25);
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(168, 85, 247, 0.45);
+  }
 }
 
 @layer utilities {

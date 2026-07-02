@@ -88,24 +88,24 @@ const WINDOW_OPTIONS: ReputationWindowDays[] = [30, 90, 180];
 const PERCENTILE_BANDS = [10, 25, 50] as const;
 const THRESHOLD_PRESETS = {
   roi: [
-    { label: "ROI > 20%", value: 2000n },
-    { label: "ROI > 50%", value: 5000n },
+    { label: "Claim ROI > 20%", value: 2000n },
+    { label: "Claim ROI > 50%", value: 5000n },
   ],
   profit: [
-    { label: "Profit > 5 USDC", value: 50_000_000n },
-    { label: "Profit > 10 USDC", value: 100_000_000n },
+    { label: "Claim profit > 5 USDC", value: 50_000_000n },
+    { label: "Claim profit > 10 USDC", value: 100_000_000n },
   ],
   winRate: [
-    { label: "Win rate > 60%", value: 6000n },
-    { label: "Win rate > 75%", value: 7500n },
+    { label: "Claim win rate > 60%", value: 6000n },
+    { label: "Claim win rate > 75%", value: 7500n },
   ],
   participation: [
-    { label: "3 markets", value: 3n },
-    { label: "5 markets", value: 5n },
+    { label: "3 claimed markets", value: 3n },
+    { label: "5 claimed markets", value: 5n },
   ],
   exposure: [
-    { label: "50 USDC", value: 500000000n },
-    { label: "100 USDC", value: 1000000000n },
+    { label: "50 USDC claim exposure", value: 500000000n },
+    { label: "100 USDC claim exposure", value: 1000000000n },
   ],
 } as const;
 
@@ -1292,6 +1292,14 @@ function ReputationModal({
 }: ReputationModalProps) {
   const [step, setStep] = useState(1);
 
+  useEffect(() => {
+    if (isOpen) {
+      setStep(1);
+      return;
+    }
+    setStep(1);
+  }, [isOpen]);
+
   const snapshotPreview = useMemo(() => {
     if (!walletAddress || !selectedCategory || claimedRecords.length === 0) {
       return null;
@@ -1749,6 +1757,9 @@ function ReputationModal({
                           {selectedCategory} · {windowDays}d · {claimMode === "percentile" ? `Top ${selectedBand}%` : `${selectedThresholdMetric} threshold`}
                         </p>
                       </div>
+                      <div className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-500/10 px-4 py-3 text-xs leading-relaxed text-white/70">
+                        This credential currently scores only attested claim-backed records. Resolved losing commitments without claim attestation do not count yet, so ROI and win-rate style creds can read stronger than full market history.
+                      </div>
                       {generationBlocker ? (
                         <div className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-500/10 px-4 py-3 text-xs leading-relaxed text-white/70">
                           {generationBlocker}
@@ -1933,7 +1944,6 @@ function ReputationModal({
                       setStep((current) => current + 1);
                       return;
                     }
-                    onClose();
                     void onGenerate();
                   }}
                   disabled={busy || !canMoveForward}
@@ -2236,6 +2246,28 @@ export default function ReputationPage() {
     : "Generating credential";
   const generationProgress = generationStepIndex >= 0 ? Math.max(8, ((generationStepIndex + 1) / generationPhases.length) * 100) : 0;
 
+  function resetCredentialComposerState() {
+    setClaimMode("percentile");
+    setWindowDays(90);
+    setSelectedCategory("macro");
+    setSelectedBand(25);
+    setSelectedThresholdMetric("roi");
+    setSelectedThresholdValue(THRESHOLD_PRESETS.roi[0].value);
+    setCredential(null);
+    setStatus("");
+    setIsVerifying(false);
+  }
+
+  function closeCredentialModal() {
+    setIsCredModalOpen(false);
+    resetCredentialComposerState();
+  }
+
+  function openCredentialModal() {
+    resetCredentialComposerState();
+    setIsCredModalOpen(true);
+  }
+
   async function handleReorderShowcaseCards(nextCards: ShowcaseCredentialCard[]) {
     if (!walletAddress) {
       return;
@@ -2413,6 +2445,11 @@ export default function ReputationPage() {
     }
   }
 
+  async function handleGenerateCredentialFromModal() {
+    closeCredentialModal();
+    await handleGenerateCredential();
+  }
+
   async function publishReputationShare() {
     if (!walletAddress) {
       setStatus("Connect your wallet first so the share can be tied to your profile.");
@@ -2537,21 +2574,31 @@ export default function ReputationPage() {
     }
   }
 
-  async function handleRemoveAchievement(card: AchievementCard) {
+  function findAchievementBySerialized(serialized: string) {
+    return achievements.find((entry) => entry.serialized === serialized) ?? null;
+  }
+
+  async function handleRemoveAchievement(card: AchievementCard | ShowcaseCredentialCard) {
     if (!walletAddress) {
       setStatus("Connect your wallet first.");
       return;
     }
 
-    setRemovingCardId(card.id);
+    const target = "publicClaim" in card ? card : findAchievementBySerialized(card.serialized);
+    if (!target) {
+      setStatus("Could not find that reputation card anymore.");
+      return;
+    }
+
+    setRemovingCardId(target.id);
     setOpenCardMenuId(null);
     setCardPendingRemoval(null);
 
     try {
-      await removeAchievement(walletAddress, card.serialized);
-      setAchievements((current) => current.filter((entry) => entry.serialized !== card.serialized));
-      setCredential((current) => (current?.serialized === card.serialized ? null : current));
-      setSelectedCard((current) => (current?.id === card.id ? null : current));
+      await removeAchievement(walletAddress, target.serialized);
+      setAchievements((current) => current.filter((entry) => entry.serialized !== target.serialized));
+      setCredential((current) => (current?.serialized === target.serialized ? null : current));
+      setSelectedCard((current) => (current?.id === target.id ? null : current));
       setStatus("Reputation card removed.");
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Failed to remove reputation card.");
@@ -2560,9 +2607,15 @@ export default function ReputationPage() {
     }
   }
 
-  async function handleArchiveAchievement(card: AchievementCard) {
+  async function handleArchiveAchievement(card: AchievementCard | ShowcaseCredentialCard) {
     if (!walletAddress) {
       setStatus("Connect your wallet first.");
+      return;
+    }
+
+    const target = "publicClaim" in card ? card : findAchievementBySerialized(card.serialized);
+    if (!target) {
+      setStatus("Could not find that reputation card anymore.");
       return;
     }
 
@@ -2571,9 +2624,9 @@ export default function ReputationPage() {
     try {
       const shouldArchive = selectedCardTab !== "archive";
       const archivedAt = shouldArchive ? Date.now() : null;
-      await archiveAchievement(walletAddress, card.serialized, shouldArchive);
+      await archiveAchievement(walletAddress, target.serialized, shouldArchive);
       setAchievements((current) => current.map((entry) => (
-        entry.serialized === card.serialized ? { ...entry, archivedAt } : entry
+        entry.serialized === target.serialized ? { ...entry, archivedAt } : entry
       )));
       setStatus(shouldArchive ? "Reputation card archived." : "Removed from archive.");
     } catch (error) {
@@ -2817,7 +2870,7 @@ export default function ReputationPage() {
                           </button>
                           <button
                             type="button"
-                            onClick={() => setIsCredModalOpen(true)}
+                            onClick={() => openCredentialModal()}
                             className="inline-flex h-10 items-center justify-center rounded-xl bg-white px-4 text-[11px] font-bold uppercase tracking-[0.16em] text-black transition hover:bg-white/90"
                           >
                             Generate Cred
@@ -2897,7 +2950,7 @@ export default function ReputationPage() {
                               }}
                               onRemove={(nextCard) => {
                                 setOpenCardMenuId(null);
-                                setCardPendingRemoval(nextCard);
+                                setCardPendingRemoval(findAchievementBySerialized(nextCard.serialized));
                               }}
                               onShowDetails={(nextCard) => {
                                 setOpenCardMenuId(null);
@@ -2947,7 +3000,7 @@ export default function ReputationPage() {
 
       <ReputationModal
         isOpen={isCredModalOpen}
-        onClose={() => setIsCredModalOpen(false)}
+        onClose={closeCredentialModal}
         walletAddress={walletAddress}
         categories={categories}
         claimedRecords={claimedRecords}
@@ -2967,7 +3020,7 @@ export default function ReputationPage() {
         status={status}
         credential={credential}
         isVerifying={isVerifying}
-        onGenerate={handleGenerateCredential}
+        onGenerate={handleGenerateCredentialFromModal}
         onVerify={handleVerifyCredential}
       />
 

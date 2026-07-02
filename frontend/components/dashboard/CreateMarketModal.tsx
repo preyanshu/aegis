@@ -24,6 +24,22 @@ type DraftCondition = {
     joinWithNext: "AND" | "OR";
 };
 
+type AiMarketDraft = {
+    question: string;
+    category: "macro" | "crypto" | "eth-related" | "fx" | "commodities";
+    resolutionDateTime: string;
+    minBet: string;
+    maxBet: string;
+    feeBps: string;
+    conditions: Array<{
+        assetSymbol: string;
+        comparator: "gte" | "lte";
+        threshold: string;
+        joinWithNext?: "AND" | "OR";
+    }>;
+    assumptions?: string[];
+};
+
 type LivePriceMap = Record<string, Awaited<ReturnType<typeof loadReflectorPrice>>>;
 
 const CATEGORY_OPTIONS = ["macro", "crypto", "eth-related", "fx", "commodities"];
@@ -202,6 +218,21 @@ function inferThreshold(question: string, sourcePrice: string) {
         return match[1].replace(/,/g, "");
     }
     return sourcePrice;
+}
+
+function normalizeDraftConditionFromAi(condition: AiMarketDraft["conditions"][number], index: number): DraftCondition {
+    const source = TRUSTED_DATA_SOURCES.find((entry) => entry.ticker === condition.assetSymbol);
+    if (!source) {
+        throw new Error(`AI selected unsupported asset ${condition.assetSymbol} for condition ${index + 1}.`);
+    }
+
+    return {
+        assetSymbol: source.ticker,
+        oracleContract: source.oracleContract,
+        comparator: condition.comparator,
+        threshold: condition.threshold,
+        joinWithNext: condition.joinWithNext === "OR" ? "OR" : "AND",
+    };
 }
 
 function formatTimestamp(timestamp: string) {
@@ -524,8 +555,9 @@ export function CreateMarketModal({ isOpen, onClose, onCreated }: CreateMarketMo
         if (isSubmitting) {
             return;
         }
-        onClose();
+        // Reset state before closing to ensure modal fully cleans up
         reset();
+        onClose();
     }
 
     async function handleGetFunds() {
@@ -566,32 +598,34 @@ export function CreateMarketModal({ isOpen, onClose, onCreated }: CreateMarketMo
         setIsMagicLoading(true);
         setError("");
         try {
-            await new Promise((resolve) => setTimeout(resolve, 500));
-            const source = inferTicker(question);
-            const comparator = inferComparator(question);
-            const livePrice = await loadReflectorPrice(source.oracleContract, source.ticker).catch(() => null);
-            if (livePrice) {
-                setLivePrices((current) => ({ ...current, [source.ticker]: livePrice }));
-            }
-            const threshold = inferThreshold(question, livePrice?.formatted ?? source.price);
-
-            setCategory(guessCategory(question, source.ticker));
-            const nextDeadline = deadlineFromQuestion(question);
-            setEndTimestamp(nextDeadline);
-            setResolutionDateTime(unixToLocalDateTime(nextDeadline));
-            setDraftConditions([
-                {
-                    assetSymbol: source.ticker,
-                    oracleContract: source.oracleContract,
-                    comparator,
-                    threshold,
-                    joinWithNext: "AND",
+            const response = await fetch("/api/market-draft", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
                 },
-            ]);
-            setMinBet(stroopsToDecimal("10000000"));
-            setMaxBet(stroopsToDecimal(source.group === "FX" ? "100000000" : "250000000"));
-            setFeeBps(DEFAULT_FEE_BPS);
-            setStep(2);
+                body: JSON.stringify({ prompt: question }),
+            });
+            const payload = await response.json().catch(() => null) as { draft?: AiMarketDraft; error?: string } | null;
+
+            if (!response.ok || !payload?.draft) {
+                throw new Error(payload?.error ?? "AI could not generate a resolvable market from that prompt.");
+            }
+
+            const draft = payload.draft;
+            const nextConditions = draft.conditions.map(normalizeDraftConditionFromAi);
+            const nextResolutionUnix = localDateTimeToUnix(draft.resolutionDateTime);
+
+            setQuestion(draft.question);
+            setCategory(draft.category);
+            setDraftConditions(nextConditions);
+            setResolutionDateTime(draft.resolutionDateTime);
+            setEndTimestamp(nextResolutionUnix);
+            setMinBet(draft.minBet);
+            setMaxBet(draft.maxBet);
+            setFeeBps(draft.feeBps || DEFAULT_FEE_BPS);
+            setStep(5);
+        } catch (magicError) {
+            setError(magicError instanceof Error ? magicError.message : "Magic Fill could not build a market from that prompt.");
         } finally {
             setIsMagicLoading(false);
         }
@@ -652,9 +686,10 @@ export function CreateMarketModal({ isOpen, onClose, onCreated }: CreateMarketMo
                 console.warn("Market created, but dashboard refresh hit an error:", refreshError);
             }
         } catch (submitError) {
-            setError(submitError instanceof Error ? submitError.message : String(submitError));
-            setIsSubmitting(false);
-        }
+                setError(submitError instanceof Error ? submitError.message : String(submitError));
+            } finally {
+                setIsSubmitting(false);
+            }
     }
 
     return (
@@ -707,7 +742,7 @@ export function CreateMarketModal({ isOpen, onClose, onCreated }: CreateMarketMo
                                                 <p className="text-[10px] font-black text-fuchsia-200/70 uppercase tracking-[0.22em] mb-3">AI Magic</p>
                                                 <h3 className="text-xl font-black text-white tracking-tight">Start from a question</h3>
                                                 <p className="text-sm text-white/55 mt-3 leading-relaxed">
-                                                    Auto-draft category, comparator, target, and a default resolution window from the question, then fine-tune it in the next steps.
+                                                    Fill the full market draft from a prompt, including category, exact resolution time, and up to 5 oracle conditions.
                                                 </p>
                                             </div>
                                             <button
@@ -1074,116 +1109,6 @@ export function CreateMarketModal({ isOpen, onClose, onCreated }: CreateMarketMo
 
                             {step === 5 ? (
                                 <div className="space-y-6">
-                                    <div>
-                                        <p className="text-[10px] font-black text-white/40 uppercase tracking-[0.22em] mb-3">Review & Launch</p>
-                                        <h3 className="text-lg font-black text-white tracking-tight">{createdTxHash ? "Transaction confirmed" : "Approve transaction"}</h3>
-                                        <p className="text-sm text-white/50 mt-2">
-                                            {createdTxHash
-                                                ? "The market is live on Stellar. You can inspect the transaction or close this window."
-                                                : `Review the payload, wallet balance, and network fee before signing on ${currentNetworkLabel()}.`}
-                                        </p>
-                                    </div>
-
-                                    <div className="rounded-[28px] border border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.015))] p-4 sm:p-5">
-                                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                                            <div className="min-w-0">
-                                                <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/35">Signing Wallet</p>
-                                                <div className="group relative mt-2 inline-flex max-w-full">
-                                                    <p className="text-sm font-semibold text-white">
-                                                        {stellarWallet?.address ? shortenAddress(stellarWallet.address, 8, 6) : "Wallet not connected"}
-                                                    </p>
-                                                    {stellarWallet?.address ? (
-                                                        <div className="pointer-events-none absolute left-0 top-full z-20 mt-2 w-max max-w-[18rem] rounded-xl border border-white/10 bg-[#0d0d10] px-3 py-2 text-[11px] font-medium tracking-normal text-white/70 opacity-0 shadow-2xl transition-opacity group-hover:opacity-100">
-                                                            {stellarWallet.address}
-                                                        </div>
-                                                    ) : null}
-                                                </div>
-                                            </div>
-                                            <div className="inline-flex items-center gap-2 self-start rounded-full border border-violet-400/15 bg-violet-500/10 px-3 py-1.5">
-                                                <span className="h-2 w-2 rounded-full bg-fuchsia-300" />
-                                                <span className="text-[10px] font-black uppercase tracking-[0.2em] text-violet-100">{isTestnet ? "Testnet" : "Mainnet"}</span>
-                                            </div>
-                                        </div>
-
-                                        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                                            <div className="rounded-2xl border border-white/6 bg-black/20 p-3.5">
-                                                <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/25">Available XLM</p>
-                                                <p className="mt-2 text-lg font-semibold text-white">{formatXlmAmount(xlmSpendableBalance, 4)} XLM</p>
-                                                <p className="mt-1 text-[11px] text-white/35">Spendable after Stellar reserve.</p>
-                                            </div>
-                                            <div className="rounded-2xl border border-white/6 bg-black/20 p-3.5">
-                                                <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/25">Available USDC</p>
-                                                <p className="mt-2 text-lg font-semibold text-white">{formatUsdcInput(walletBalance)} USDC</p>
-                                                <p className="mt-1 text-[11px] text-white/35">Collateral token in this wallet.</p>
-                                            </div>
-                                        </div>
-
-                                        <div className="mt-4 border-t border-white/8 pt-4">
-                                            <div className="flex items-start justify-between gap-4">
-                                                <div className="min-w-0">
-                                                    <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/30">Action</p>
-                                                    <h4 className="mt-2 text-base font-black leading-tight text-white break-words">{question}</h4>
-                                                </div>
-                                                <div className="shrink-0 rounded-full border border-violet-400/15 bg-violet-500/10 px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-violet-100">
-                                                    {category}
-                                                </div>
-                                            </div>
-                                        </div>
-
-                                        <div className="mt-4 border-t border-white/8 pt-4">
-                                            <div className="space-y-3">
-                                                <div className="flex items-center justify-between gap-4 text-sm">
-                                                    <span className="text-white/45">Network fee</span>
-                                                    <span className="font-mono text-white">
-                                                        {isEstimatingFee ? "Estimating..." : estimatedFeeXlm ? `${formatXlmAmount(estimatedFeeXlm)} XLM` : "Unavailable"}
-                                                    </span>
-                                                </div>
-                                                <div className="flex items-center justify-between gap-4 text-sm">
-                                                    <span className="text-white/45">Wallet balance</span>
-                                                    <span className="font-mono text-right text-white">{formatXlmAmount(xlmBalance)} XLM</span>
-                                                </div>
-                                                <div className="flex items-center justify-between gap-4 text-sm">
-                                                    <span className="text-white/45">Reserved minimum</span>
-                                                    <span className="font-mono text-right text-white">{formatXlmAmount(xlmMinimumBalance)} XLM</span>
-                                                </div>
-                                                <div className="flex items-center justify-between gap-4 text-sm">
-                                                    <span className="text-white/45">Resolution time</span>
-                                                    <span className="font-mono text-right text-white">{formatTimestamp(endTimestamp)}</span>
-                                                </div>
-                                                <div className="flex items-center justify-between gap-4 text-sm">
-                                                    <span className="text-white/45">Bet range</span>
-                                                    <span className="font-mono text-right text-white">{formatUsdcInput(minBet)} to {formatUsdcInput(maxBet)} USDC</span>
-                                                </div>
-                                            </div>
-                                        </div>
-
-                                        {hasInsufficientFeeBalance ? (
-                                            <div className="mt-4 rounded-2xl border border-amber-500/20 bg-amber-500/8 px-4 py-3">
-                                                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                                                    <p className="text-[11px] text-amber-200">
-                                                        Your wallet can spend about {formatXlmAmount(xlmSpendableBalance)} XLM after Stellar reserve, but this transaction currently needs about {formatXlmAmount(estimatedFeeXlm)} XLM.
-                                                    </p>
-                                                    {isTestnet ? (
-                                                        <button
-                                                            onClick={() => void handleGetFunds()}
-                                                            disabled={isFundingWallet}
-                                                            className="h-10 shrink-0 rounded-xl border border-amber-400/20 bg-amber-300/90 px-4 text-[11px] font-black uppercase tracking-[0.18em] text-black transition-all hover:bg-amber-200 disabled:opacity-70"
-                                                        >
-                                                            {isFundingWallet ? "Funding..." : "Get Funds"}
-                                                        </button>
-                                                    ) : null}
-                                                </div>
-                                            </div>
-                                        ) : null}
-
-                                        <div className="mt-4 border-t border-white/8 pt-4">
-                                            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-fuchsia-200/65">Resolution Logic</p>
-                                            <div className="mt-3">
-                                                <LogicPreview conditions={draftConditions} tone="accent" />
-                                            </div>
-                                        </div>
-                                    </div>
-
                                     {createdTxHash ? (
                                         <div className="rounded-[24px] border border-violet-400/20 bg-[linear-gradient(180deg,rgba(168,85,247,0.14),rgba(255,255,255,0.02))] p-6 sm:p-7">
                                             <div className="flex flex-col items-center text-center">
@@ -1213,7 +1138,117 @@ export function CreateMarketModal({ isOpen, onClose, onCreated }: CreateMarketMo
                                                 </div>
                                             </div>
                                         </div>
-                                    ) : null}
+                                    ) : (
+                                        <>
+                                            <div>
+                                                <p className="text-[10px] font-black text-white/40 uppercase tracking-[0.22em] mb-3">Review & Launch</p>
+                                                <h3 className="text-lg font-black text-white tracking-tight">Approve transaction</h3>
+                                                <p className="text-sm text-white/50 mt-2">
+                                                    {`Review the payload, wallet balance, and network fee before signing on ${currentNetworkLabel()}.`}
+                                                </p>
+                                            </div>
+
+                                            <div className="rounded-[28px] border border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.015))] p-4 sm:p-5">
+                                                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                                    <div className="min-w-0">
+                                                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/35">Signing Wallet</p>
+                                                        <div className="group relative mt-2 inline-flex max-w-full">
+                                                            <p className="text-sm font-semibold text-white">
+                                                                {stellarWallet?.address ? shortenAddress(stellarWallet.address, 8, 6) : "Wallet not connected"}
+                                                            </p>
+                                                            {stellarWallet?.address ? (
+                                                                <div className="pointer-events-none absolute left-0 top-full z-20 mt-2 w-max max-w-[18rem] rounded-xl border border-white/10 bg-[#0d0d10] px-3 py-2 text-[11px] font-medium tracking-normal text-white/70 opacity-0 shadow-2xl transition-opacity group-hover:opacity-100">
+                                                                    {stellarWallet.address}
+                                                                </div>
+                                                            ) : null}
+                                                        </div>
+                                                    </div>
+                                                    <div className="inline-flex items-center gap-2 self-start rounded-full border border-violet-400/15 bg-violet-500/10 px-3 py-1.5">
+                                                        <span className="h-2 w-2 rounded-full bg-fuchsia-300" />
+                                                        <span className="text-[10px] font-black uppercase tracking-[0.2em] text-violet-100">{isTestnet ? "Testnet" : "Mainnet"}</span>
+                                                    </div>
+                                                </div>
+
+                                                <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                                                    <div className="rounded-2xl border border-white/6 bg-black/20 p-3.5">
+                                                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/25">Available XLM</p>
+                                                        <p className="mt-2 text-lg font-semibold text-white">{formatXlmAmount(xlmSpendableBalance, 4)} XLM</p>
+                                                        <p className="mt-1 text-[11px] text-white/35">Spendable after Stellar reserve.</p>
+                                                    </div>
+                                                    <div className="rounded-2xl border border-white/6 bg-black/20 p-3.5">
+                                                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/25">Available USDC</p>
+                                                        <p className="mt-2 text-lg font-semibold text-white">{formatUsdcInput(walletBalance)} USDC</p>
+                                                        <p className="mt-1 text-[11px] text-white/35">Collateral token in this wallet.</p>
+                                                    </div>
+                                                </div>
+
+                                                <div className="mt-4 border-t border-white/8 pt-4">
+                                                    <div className="flex items-start justify-between gap-4">
+                                                        <div className="min-w-0">
+                                                            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/30">Action</p>
+                                                            <h4 className="mt-2 text-base font-black leading-tight text-white break-words">{question}</h4>
+                                                        </div>
+                                                        <div className="shrink-0 rounded-full border border-violet-400/15 bg-violet-500/10 px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-violet-100">
+                                                            {category}
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                <div className="mt-4 border-t border-white/8 pt-4">
+                                                    <div className="space-y-3">
+                                                        <div className="flex items-center justify-between gap-4 text-sm">
+                                                            <span className="text-white/45">Network fee</span>
+                                                            <span className="font-mono text-white">
+                                                                {isEstimatingFee ? "Estimating..." : estimatedFeeXlm ? `${formatXlmAmount(estimatedFeeXlm)} XLM` : "Unavailable"}
+                                                            </span>
+                                                        </div>
+                                                        <div className="flex items-center justify-between gap-4 text-sm">
+                                                            <span className="text-white/45">Wallet balance</span>
+                                                            <span className="font-mono text-right text-white">{formatXlmAmount(xlmBalance)} XLM</span>
+                                                        </div>
+                                                        <div className="flex items-center justify-between gap-4 text-sm">
+                                                            <span className="text-white/45">Reserved minimum</span>
+                                                            <span className="font-mono text-right text-white">{formatXlmAmount(xlmMinimumBalance)} XLM</span>
+                                                        </div>
+                                                        <div className="flex items-center justify-between gap-4 text-sm">
+                                                            <span className="text-white/45">Resolution time</span>
+                                                            <span className="font-mono text-right text-white">{formatTimestamp(endTimestamp)}</span>
+                                                        </div>
+                                                        <div className="flex items-center justify-between gap-4 text-sm">
+                                                            <span className="text-white/45">Bet range</span>
+                                                            <span className="font-mono text-right text-white">{formatUsdcInput(minBet)} to {formatUsdcInput(maxBet)} USDC</span>
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                {hasInsufficientFeeBalance ? (
+                                                    <div className="mt-4 rounded-2xl border border-amber-500/20 bg-amber-500/8 px-4 py-3">
+                                                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                                            <p className="text-[11px] text-amber-200">
+                                                                Your wallet can spend about {formatXlmAmount(xlmSpendableBalance)} XLM after Stellar reserve, but this transaction currently needs about {formatXlmAmount(estimatedFeeXlm)} XLM.
+                                                            </p>
+                                                            {isTestnet ? (
+                                                                <button
+                                                                    onClick={() => void handleGetFunds()}
+                                                                    disabled={isFundingWallet}
+                                                                    className="h-10 shrink-0 rounded-xl border border-amber-400/20 bg-amber-300/90 px-4 text-[11px] font-black uppercase tracking-[0.18em] text-black transition-all hover:bg-amber-200 disabled:opacity-70"
+                                                                >
+                                                                    {isFundingWallet ? "Funding..." : "Get Funds"}
+                                                                </button>
+                                                            ) : null}
+                                                        </div>
+                                                    </div>
+                                                ) : null}
+
+                                                <div className="mt-4 border-t border-white/8 pt-4">
+                                                    <p className="text-[10px] font-black uppercase tracking-[0.2em] text-fuchsia-200/65">Resolution Logic</p>
+                                                    <div className="mt-3">
+                                                        <LogicPreview conditions={draftConditions} tone="accent" />
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </>
+                                    )}
                                 </div>
                             ) : null}
 
@@ -1236,7 +1271,7 @@ export function CreateMarketModal({ isOpen, onClose, onCreated }: CreateMarketMo
                             <div className="flex items-center gap-3">
                                 {createdTxHash ? (
                                     <button
-                                        onClick={handleClose}
+                                        onClick={(e) => { e.stopPropagation(); handleClose(); }}
                                         className="flex h-12 items-center justify-center gap-2.5 rounded-xl border border-violet-400/20 bg-violet-500/14 px-6 text-xs font-bold uppercase tracking-[0.2em] text-violet-50 transition-all hover:border-violet-300/35 hover:bg-violet-500/22 active:scale-[0.99] shadow-xl shadow-violet-950/30"
                                     >
                                         Done

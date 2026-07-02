@@ -1,4 +1,4 @@
-import { amountUsdcToStroops, derivePositionArtifacts, marketIdToField, padHex32 } from "../../frontend/lib/proof-artifacts";
+import { amountUsdcToStroops, derivePositionArtifacts, marketIdToField, padHex32 } from "@/lib/proof-artifacts";
 import {
   buildMerkleProof,
   buildReputationPublicInputs,
@@ -378,7 +378,7 @@ export async function generateClaimProof(input: {
   amountInStroops: bigint;
   salt: string;
   commitment: string;
-  nullifier: string;
+  nullifier?: string;
   outcome: boolean;
   distributablePot: bigint;
   winningSideTotal: bigint;
@@ -396,7 +396,7 @@ export async function generateClaimProof(input: {
   if (input.commitment.toLowerCase() !== artifacts.commitmentHex.toLowerCase()) {
     throw new Error("claim proof inputs do not reproduce the saved commitment");
   }
-  if (input.nullifier.toLowerCase() !== artifacts.nullifierHex.toLowerCase()) {
+  if (input.nullifier && input.nullifier.toLowerCase() !== artifacts.nullifierHex.toLowerCase()) {
     throw new Error("claim proof inputs do not reproduce the saved nullifier");
   }
 

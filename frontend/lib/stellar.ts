@@ -1,7 +1,6 @@
-export * from "../../frontend/lib/stellar";
+"use client";
 
-import { loadUsdcBalance as loadUsdcBalanceBase } from "../../frontend/lib/stellar";
-
+import { Buffer } from "buffer";
 import type { User } from "@privy-io/react-auth";
 import {
   Address,
@@ -16,17 +15,7 @@ import {
   scValToNative,
   xdr,
 } from "@stellar/stellar-sdk";
-
-type AppConfig = {
-  rpcUrl: string;
-  contractId: string;
-  networkPassphrase: string;
-  wallets: Array<{
-    label: string;
-    secret: string;
-    publicKey: string;
-  }>;
-};
+import type { AppConfig, WalletConfig } from "@/lib/server-config";
 
 type StellarLinkedWallet = {
   address: string;
@@ -55,6 +44,81 @@ export type StellarNativeBalanceSummary = {
   numSponsored: number;
 };
 
+export type OracleCondition = {
+  oracle_contract: string;
+  asset_symbol: string;
+  greater_or_equal: boolean;
+  threshold: bigint;
+};
+
+export type ResolvedCondition = OracleCondition & {
+  observed_price: bigint;
+  observed_timestamp: bigint;
+  satisfied: boolean;
+};
+
+export type MarketConfig = {
+  creator: string;
+  question: string;
+  category: string;
+  oracle_conditions: OracleCondition[];
+  condition_operators: boolean[];
+  end_timestamp: bigint;
+  min_bet: bigint;
+  max_bet: bigint;
+  fee_bps: number;
+};
+
+export type MarketState = {
+  total_locked_collateral: bigint;
+  commitment_count: number;
+  resolved: boolean;
+  claims_finalized: boolean;
+  tally_finalized: boolean;
+  market_lifecycle: number;
+  outcome: boolean;
+  outcome_price: bigint;
+  resolved_conditions: ResolvedCondition[];
+  distributable_pot: bigint;
+  winning_side_total: bigint;
+  total_claimed_out: bigint;
+  settled_at: bigint;
+  tally_deadline: bigint;
+  tallied_count: number;
+  tally_commitment: string;
+  aggregate_commitment: string;
+  tallied_collateral_total: bigint;
+  missed_tally_collateral: bigint;
+  treasury_amount: bigint;
+  yes_total: bigint;
+  no_total: bigint;
+};
+
+export type MarketView = {
+  config: MarketConfig;
+  state: MarketState;
+};
+
+export type SystemConfig = {
+  admin: string;
+  usdc_token: string;
+  reflector_contract: string;
+  commit_verifier: string;
+  tally_update_verifier: string;
+  tally_finalize_verifier: string;
+  claim_verifier: string;
+  shard_signer_1: string;
+  shard_signer_2: string;
+  shard_signer_3: string;
+  shard_signer_4: string;
+  shard_signer_5: string;
+};
+
+export type TransactionResult = {
+  hash: string;
+  returnValue: unknown;
+};
+
 const TESTNET_USDC_ASSET_CODE = "USDC";
 const TESTNET_USDC_ISSUER = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 
@@ -75,6 +139,10 @@ export function getBrowserConfig() {
   return getGlobalConfig();
 }
 
+export function setBrowserConfig(config: AppConfig) {
+  (window as Window & { __BLIND_MARKET_CONFIG__?: AppConfig }).__BLIND_MARKET_CONFIG__ = config;
+}
+
 function server() {
   return new rpc.Server(getGlobalConfig().rpcUrl);
 }
@@ -84,8 +152,43 @@ function horizonUrl() {
   return rpcUrl.includes("testnet") ? "https://horizon-testnet.stellar.org" : "https://horizon.stellar.org";
 }
 
+async function loadLatestLedgerTimeSeconds() {
+  const response = await fetch(getGlobalConfig().rpcUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "getLatestLedger",
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`failed to load latest Stellar ledger: ${response.status}`);
+  }
+
+  const payload = await response.json() as {
+    result?: {
+      closeTime?: string;
+    };
+  };
+
+  const closeTime = Number(payload.result?.closeTime ?? 0);
+  if (!Number.isFinite(closeTime) || closeTime <= 0) {
+    throw new Error("latest Stellar ledger timestamp unavailable");
+  }
+
+  return closeTime;
+}
+
 function contractId() {
   return getGlobalConfig().contractId;
+}
+
+function tokenContractId() {
+  return getGlobalConfig().usdcTokenId;
 }
 
 function networkPassphrase() {
@@ -96,7 +199,24 @@ function isTestnetNetwork() {
   return networkPassphrase().includes("Test");
 }
 
-function bytesToHex(bytes: Uint8Array) {
+function publicKeyFromWallet(wallet: WalletConfig) {
+  return wallet.publicKey || Keypair.fromSecret(wallet.secret).publicKey();
+}
+
+export function walletByLabel(label: string) {
+  return getGlobalConfig().wallets.find((wallet) => wallet.label === label) ?? null;
+}
+
+export function walletPublicKey(label: string) {
+  const wallet = walletByLabel(label);
+  if (!wallet) {
+    throw new Error(`unknown wallet: ${label}`);
+  }
+
+  return publicKeyFromWallet(wallet);
+}
+
+export function bytesToHex(bytes: Uint8Array) {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
@@ -124,7 +244,7 @@ function bigIntToDecimalString(value: bigint, decimals = 7) {
   return `${negative ? "-" : ""}${whole.toString()}${fraction ? `.${fraction}` : ""}`;
 }
 
-function hexToBytes(hex: string) {
+export function hexToBytes(hex: string) {
   const clean = hex.replace(/^0x/i, "");
   if (clean.length % 2 !== 0) {
     throw new Error(`invalid hex string length: ${hex}`);
@@ -170,6 +290,94 @@ function scValMap(entries: Array<[string, xdr.ScVal]>) {
   );
 }
 
+function asBigInt(value: unknown) {
+  if (typeof value === "bigint") return value;
+  if (typeof value === "number") return BigInt(value);
+  if (typeof value === "string") return BigInt(value);
+  if (value instanceof Uint8Array) return BigInt(`0x${bytesToHex(value)}`);
+  throw new Error(`cannot convert ${String(value)} to bigint`);
+}
+
+type ContractMap = Record<string, unknown>;
+
+function normalizeOracleCondition(raw: ContractMap): OracleCondition {
+  return {
+    oracle_contract: String(raw.oracle_contract),
+    asset_symbol: String(raw.asset_symbol),
+    greater_or_equal: Boolean(raw.greater_or_equal),
+    threshold: asBigInt(raw.threshold),
+  };
+}
+
+function normalizeResolvedCondition(raw: ContractMap): ResolvedCondition {
+  return {
+    ...normalizeOracleCondition(raw),
+    observed_price: asBigInt(raw.observed_price ?? 0),
+    observed_timestamp: asBigInt(raw.observed_timestamp ?? 0),
+    satisfied: Boolean(raw.satisfied),
+  };
+}
+
+function normalizeMarketConfig(raw: ContractMap): MarketConfig {
+  const count = Number(raw.condition_count ?? 0);
+  return {
+    creator: String(raw.creator),
+    question: String(raw.question),
+    category: String(raw.category),
+    oracle_conditions: ([raw.condition_1, raw.condition_2, raw.condition_3, raw.condition_4, raw.condition_5] as ContractMap[])
+      .slice(0, count)
+      .map(normalizeOracleCondition),
+    condition_operators: [raw.operator_1_is_and, raw.operator_2_is_and, raw.operator_3_is_and, raw.operator_4_is_and]
+      .slice(0, Math.max(0, count - 1))
+      .map((value: unknown) => Boolean(value)),
+    end_timestamp: asBigInt(raw.end_timestamp),
+    min_bet: asBigInt(raw.min_bet),
+    max_bet: asBigInt(raw.max_bet),
+    fee_bps: Number(raw.fee_bps),
+  };
+}
+
+function normalizeMarketState(raw: ContractMap): MarketState {
+  const resolvedCount = Number(raw.resolved_condition_count ?? 0);
+  return {
+    total_locked_collateral: asBigInt(raw.total_locked_collateral),
+    commitment_count: Number(raw.commitment_count ?? 0),
+    resolved: Boolean(raw.resolved),
+    claims_finalized: Boolean(raw.claims_finalized),
+    tally_finalized: Boolean(raw.tally_finalized),
+    market_lifecycle: Number(raw.market_lifecycle ?? 0),
+    outcome: Boolean(raw.outcome),
+    outcome_price: asBigInt(raw.outcome_price),
+    resolved_conditions: ([raw.resolved_condition_1, raw.resolved_condition_2, raw.resolved_condition_3, raw.resolved_condition_4, raw.resolved_condition_5] as ContractMap[])
+      .slice(0, resolvedCount)
+      .map(normalizeResolvedCondition),
+    distributable_pot: asBigInt(raw.distributable_pot),
+    winning_side_total: asBigInt(raw.winning_side_total),
+    total_claimed_out: asBigInt(raw.total_claimed_out),
+    settled_at: asBigInt(raw.settled_at ?? 0),
+    tally_deadline: asBigInt(raw.tally_deadline ?? 0),
+    tallied_count: Number(raw.tallied_count ?? 0),
+    tally_commitment: raw.tally_commitment instanceof Uint8Array
+      ? `0x${bytesToHex(raw.tally_commitment)}`
+      : String(raw.tally_commitment ?? ""),
+    aggregate_commitment: raw.aggregate_commitment instanceof Uint8Array
+      ? `0x${bytesToHex(raw.aggregate_commitment)}`
+      : String(raw.aggregate_commitment ?? ""),
+    tallied_collateral_total: asBigInt(raw.tallied_collateral_total ?? 0),
+    missed_tally_collateral: asBigInt(raw.missed_tally_collateral ?? 0),
+    treasury_amount: asBigInt(raw.treasury_amount ?? 0),
+    yes_total: asBigInt(raw.yes_total ?? 0),
+    no_total: asBigInt(raw.no_total ?? 0),
+  };
+}
+
+function normalizeView(raw: { config: ContractMap; state: ContractMap }): MarketView {
+  return {
+    config: normalizeMarketConfig(raw.config),
+    state: normalizeMarketState(raw.state),
+  };
+}
+
 function reflectorOtherAssetScVal(assetSymbol: string) {
   return xdr.ScVal.scvVec([scValSymbol("Other"), scValSymbol(assetSymbol)]);
 }
@@ -198,6 +406,13 @@ async function signAndSendTransaction(
 
   const sent = await server().sendTransaction(tx);
   if (sent.status === "ERROR") {
+    console.error("Stellar transaction send failed", {
+      walletAddress: wallet.address,
+      txHash: bytesToHex(tx.hash()),
+      status: sent.status,
+      errorResult: sent.errorResult,
+      envelopeXdr: tx.toXDR(),
+    });
     throw new Error(`submit failed: ${JSON.stringify(sent.errorResult)}`);
   }
 
@@ -208,6 +423,13 @@ async function signAndSendTransaction(
   }
 
   if (got.status !== rpc.Api.GetTransactionStatus.SUCCESS) {
+    console.error("Stellar transaction final status was not success", {
+      walletAddress: wallet.address,
+      txHash: sent.hash,
+      status: got.status,
+      envelopeXdr: tx.toXDR(),
+      transaction: got,
+    });
     throw new Error(`transaction ${sent.hash} did not succeed: ${got.status}`);
   }
 
@@ -631,7 +853,8 @@ export async function sellSharesWithPrivyWallet(
 
 export async function loadUsdcBalance(address: string, signerLabel = "admin") {
   try {
-    return await loadUsdcBalanceBase(address, signerLabel);
+    const raw = await readFromContract<unknown>(tokenContractId(), "balance", [scValAddress(address)], signerLabel);
+    return asBigInt(raw);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (message.includes("trustline entry is missing for account")) {
@@ -639,6 +862,23 @@ export async function loadUsdcBalance(address: string, signerLabel = "admin") {
     }
     throw error;
   }
+}
+
+export async function loadXlmBalance(address: string) {
+  const response = await fetch(`${horizonUrl()}/accounts/${address}`);
+  if (!response.ok) {
+    if (response.status === 404) {
+      return "0";
+    }
+
+    throw new Error(`failed to load Stellar account ${address}: ${response.status}`);
+  }
+
+  const account = await response.json() as {
+    balances?: Array<{ asset_type?: string; balance?: string }>;
+  };
+
+  return account.balances?.find((entry) => entry.asset_type === "native")?.balance ?? "0";
 }
 
 export async function loadStellarNativeBalanceSummary(address: string): Promise<StellarNativeBalanceSummary> {
@@ -706,6 +946,10 @@ export async function loadStellarNativeBalanceSummary(address: string): Promise<
     numSponsoring,
     numSponsored,
   };
+}
+
+export async function loadLatestLedgerTimestamp() {
+  return loadLatestLedgerTimeSeconds();
 }
 
 export async function fundStellarTestnetAddress(address: string) {
@@ -829,10 +1073,15 @@ const reflectorLatestPriceInflight = new Map<string, Promise<ReflectorLatestPric
 const reflectorHistoryCache = new Map<string, ReflectorHistoryResult>();
 const reflectorHistoryInflight = new Map<string, Promise<ReflectorHistoryResult>>();
 
-async function readFromContract<T = unknown>(targetContractId: string, method: string, args: xdr.ScVal[] = []) {
+async function readFromContract<T = unknown>(
+  targetContractId: string,
+  method: string,
+  args: xdr.ScVal[] = [],
+  signerLabel = "admin",
+) {
   const config = getGlobalConfig();
-  const signer = config.wallets[0];
-  const account = await server().getAccount(signer.publicKey);
+  const signer = config.wallets.find((entry) => entry.label === signerLabel) ?? config.wallets[0];
+  const account = await server().getAccount(publicKeyFromWallet(signer));
   const contract = new Contract(targetContractId);
   const tx = new TransactionBuilder(account, {
     fee: BASE_FEE,
@@ -853,6 +1102,35 @@ async function readFromContract<T = unknown>(targetContractId: string, method: s
   }
 
   return scValToNative(simulation.result.retval) as T;
+}
+
+async function read<T = unknown>(method: string, args: xdr.ScVal[] = [], signerLabel = "admin") {
+  return readFromContract<T>(contractId(), method, args, signerLabel);
+}
+
+export async function loadSystemConfig() {
+  return read<SystemConfig>("get_system_config");
+}
+
+export async function loadMarketIds(signerLabel = "admin") {
+  const packed = await read<unknown>("get_market_ids", [], signerLabel);
+  const bytes = packed instanceof Uint8Array ? packed : hexToBytes(String(packed));
+  const ids: string[] = [];
+  for (let offset = 0; offset < bytes.length; offset += 32) {
+    ids.push(bytesToHex(bytes.slice(offset, offset + 32)));
+  }
+
+  return ids.filter((id) => id.length === 64);
+}
+
+export async function loadMarketView(marketId: string, signerLabel = "admin") {
+  const raw = await read<{ config: ContractMap; state: ContractMap }>("get_market_view", [bytes32ScVal(marketId)], signerLabel);
+  return normalizeView(raw);
+}
+
+export async function loadMarkets(signerLabel = "admin") {
+  const ids = await loadMarketIds(signerLabel);
+  return Promise.all(ids.map(async (marketId) => ({ marketId, view: await loadMarketView(marketId, signerLabel) })));
 }
 
 export async function loadReflectorPrice(

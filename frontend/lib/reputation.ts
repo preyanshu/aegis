@@ -1,6 +1,6 @@
 import { Keypair } from "@stellar/stellar-sdk";
 import { Buffer } from "buffer";
-import { marketIdToField, padHex32 } from "../../frontend/lib/proof-artifacts";
+import { marketIdToField, padHex32 } from "@/lib/proof-artifacts";
 
 const WINDOW_OPTIONS = [30, 90, 180] as const;
 const FIELD_MASK = (1n << 248n) - 1n;
@@ -208,6 +208,14 @@ function formatClaimThreshold(claim: ReputationThresholdClaim) {
     return formatUsdcFromStroops(threshold);
   }
   return threshold.toString();
+}
+
+function claimBackedMetricLabel(metric: ReputationMetric) {
+  if (metric === "winRate") return "claim-backed win rate";
+  if (metric === "roi") return "claim-backed ROI";
+  if (metric === "profit") return "claim-backed profit";
+  if (metric === "participation") return "claim-backed participation";
+  return "claim-backed exposure";
 }
 
 export function buildAttestationMessage(record: {
@@ -442,7 +450,7 @@ export function computeClaimMetric(snapshot: ReputationSnapshot, claim: Reputati
     eligibleCount: 1n,
     peerScores: Array.from({ length: MAX_PEERS }, () => 0n),
     peerEligible: Array.from({ length: MAX_PEERS }, () => 0n),
-    displayValue: `${claim.metric === "winRate" ? "win rate" : claim.metric === "roi" ? "ROI" : claim.metric} >= ${formatClaimThreshold(claim)} over ${snapshot.windowDays}-day window`,
+    displayValue: `${claimBackedMetricLabel(claim.metric)} >= ${formatClaimThreshold(claim)} over ${snapshot.windowDays}-day window`,
   };
 }
 
@@ -506,14 +514,10 @@ export function verifyPortableReputationClaim(serialized: string): PortableReput
 
 export function reputationStatementLabel(claim: ReputationClaimDescriptor) {
   if (claim.claimType === "percentile") {
-    return `Proven top ${claim.band}%`;
+    return `Proven top ${claim.band}% claim-backed ROI`;
   }
 
-  const metricLabel = claim.metric === "winRate"
-    ? "win rate"
-    : claim.metric === "roi"
-      ? "ROI"
-      : claim.metric;
+  const metricLabel = claimBackedMetricLabel(claim.metric);
 
   const threshold = BigInt(claim.threshold);
   const thresholdLabel = claim.metric === "roi" || claim.metric === "winRate"

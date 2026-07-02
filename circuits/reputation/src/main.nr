@@ -90,20 +90,20 @@ fn compute_metric(
         if exposure == 0 {
             metric = 0;
         } else {
-            metric = (profit * 10000) / exposure;
+            metric = (((profit as u128) * (10000 as u128)) / (exposure as u128)) as Field;
         }
     } else if claim_type == 5 {
         if exposure == 0 {
             metric = 0;
         } else {
-            metric = (profit * 10000) / exposure;
+            metric = (((profit as u128) * (10000 as u128)) / (exposure as u128)) as Field;
         }
     } else if claim_type == 1 {
         metric = profit;
     } else if claim_type == 2 {
         metric = 0;
         if participation != 0 {
-            metric = (wins * 10000) / participation;
+            metric = (((wins as u64) * (10000 as u64)) / (participation as u64)) as Field;
         }
     } else if claim_type == 3 {
         metric = participation;

@@ -8,6 +8,7 @@ import {
     ArrowLeft,
     ArrowUpDown,
     Check,
+    ChevronDown,
     Clock3,
     Database,
     ExternalLink,
@@ -23,7 +24,7 @@ import {
     X,
     Zap,
 } from "lucide-react";
-import { motion } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import { AreaSeries, createChart, LineSeries, type LineData, type UTCTimestamp } from "lightweight-charts";
 import {
     claimWinningsWithPrivyWallet,
@@ -41,7 +42,7 @@ import {
     submitTallySharesToBackend,
 } from "@/lib/stellar";
 import { computeRecordCommitment, generateClaimProof, generateCommitProof, generateTallyUpdateProof, randomWitnessSalt } from "@/lib/proofs";
-import { formatCompactAddress, formatUsdc, mapMarketSummary, marketStatusLabel, payoutForPosition, positionStatusLabel, stroopsToUsdc } from "@/lib/blind-market";
+import { expectedPayoutForPosition, formatCompactAddress, formatUsdc, mapMarketSummary, marketStatusLabel, payoutForPosition, positionStatusLabel, stroopsToUsdc } from "@/lib/blind-market";
 import { TRUSTED_DATA_SOURCES } from "@/lib/data-sources";
 import { ensurePrivyStellarWallet, isPrivyStellarWalletLimitError } from "@/lib/privy-stellar-wallet";
 import { attestClaimRecord, loadReputationSnapshot, markClaimedPosition, upsertAttestedRecord, upsertCommittedPosition, upsertPrivateReputationWitness } from "@/lib/reputation-vault";
@@ -118,6 +119,19 @@ type PreparedCommitReview = {
     side: "YES" | "NO";
     amountUsdc: string;
 };
+
+type PreparedActionReview =
+    | {
+        kind: "tally";
+        positions: BlindPositionRecord[];
+        retryCount: number;
+        newCount: number;
+    }
+    | {
+        kind: "claim";
+        positions: BlindPositionRecord[];
+        totalPayout: bigint;
+    };
 
 function humanizeCommitFlowError(error: unknown, preparedCommit: PreparedCommitReview | null) {
     const raw = error instanceof Error ? error.message : String(error);
@@ -390,10 +404,15 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
     const [isCommitReviewOpen, setIsCommitReviewOpen] = useState(false);
     const [preparedCommit, setPreparedCommit] = useState<PreparedCommitReview | null>(null);
     const [commitReviewError, setCommitReviewError] = useState("");
+    const [isActionReviewOpen, setIsActionReviewOpen] = useState(false);
+    const [preparedAction, setPreparedAction] = useState<PreparedActionReview | null>(null);
+    const [actionReviewError, setActionReviewError] = useState("");
+    const [actionTxHashes, setActionTxHashes] = useState<string[]>([]);
     const [estimatedCommitFeeXlm, setEstimatedCommitFeeXlm] = useState("");
     const [isEstimatingCommitFee, setIsEstimatingCommitFee] = useState(false);
     const [isFundingWallet, setIsFundingWallet] = useState(false);
     const [commitTxHash, setCommitTxHash] = useState<string | null>(null);
+    const [expandedPositionDetails, setExpandedPositionDetails] = useState<string | null>(null);
     const [now, setNow] = useState(Date.now());
 
     useEffect(() => {
@@ -417,6 +436,8 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
         market.resolved
         && !position.claimedAt
         && market.outcome !== null
+        && market.winningSideTotal > 0n
+        && market.distributablePot > 0n
         && isSubmittedOrQueued(position)
         && position.side === market.outcome
     ));
@@ -671,6 +692,13 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
         setCommitTxHash(null);
     }
 
+    function resetActionReview() {
+        setIsActionReviewOpen(false);
+        setPreparedAction(null);
+        setActionReviewError("");
+        setActionTxHashes([]);
+    }
+
     function commitGuardrailErrorMessage() {
         if (market.resolved || marketNeedsTally || marketReadyToFinalize) {
             return "Orders can only be executed while the market is open.";
@@ -810,6 +838,67 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
         }
     }
 
+    async function handleOpenTallyReview() {
+        if (!authenticated) {
+            await login();
+            return;
+        }
+
+        if (!stellarWallet || !walletPublic) {
+            setCommitError("Connect your Privy Stellar wallet before submitting a tally.");
+            return;
+        }
+
+        if (batchedTallyPositions.length === 0) {
+            setCommitError("No positions are ready for tally review.");
+            return;
+        }
+
+        setCommitError("");
+        setActionReviewError("");
+        setActionTxHashes([]);
+        setPreparedAction({
+            kind: "tally",
+            positions: batchedTallyPositions,
+            retryCount: retryableTallyPositions.length,
+            newCount: pendingTallyPositions.length,
+        });
+        setIsActionReviewOpen(true);
+    }
+
+    async function handleOpenClaimReview(position?: BlindPositionRecord) {
+        if (!authenticated) {
+            await login();
+            return;
+        }
+
+        if (!stellarWallet || !walletPublic) {
+            setCommitError("Connect your Privy Stellar wallet before claiming.");
+            return;
+        }
+
+        const positions = position ? [position] : claimablePositions;
+        if (positions.length === 0) {
+            setCommitError("No winning commitments are ready to claim.");
+            return;
+        }
+
+        const totalPayout = positions.reduce(
+            (sum, entry) => sum + payoutForPosition(market, BigInt(entry.amountInStroops)),
+            BigInt(0),
+        );
+
+        setCommitError("");
+        setActionReviewError("");
+        setActionTxHashes([]);
+        setPreparedAction({
+            kind: "claim",
+            positions,
+            totalPayout,
+        });
+        setIsActionReviewOpen(true);
+    }
+
     async function submitTallyForPosition(position: BlindPositionRecord, previousTallyCommitment: string) {
         if (!stellarWallet || !walletPublic) {
             throw new Error("Connect your Privy Stellar wallet before submitting a tally.");
@@ -868,7 +957,10 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
                 tallySharePackets: proof.sharePackets,
             });
 
-            return proof.nextTallyCommitment;
+            return {
+                nextTallyCommitment: proof.nextTallyCommitment,
+                txHash: tx.hash,
+            };
         } catch (tallyError) {
             console.error("Submit private tally failed:", tallyError);
             const message = tallyError instanceof Error ? tallyError.message : String(tallyError);
@@ -897,19 +989,22 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
 
     async function handleSubmitAllTallies() {
         if (batchedTallyPositions.length === 0) {
-            return;
+            return [];
         }
 
         setBusy("tally-batch");
         setCommitError("");
         let completedCount = 0;
+        const txHashes: string[] = [];
         try {
             let liveView = await loadMarketView(market.marketId);
             let liveMarket = mapMarketSummary({ marketId: market.marketId, view: liveView });
             let previousTallyCommitment = liveMarket.tallyCommitment || `0x${"0".repeat(64)}`;
 
             for (const position of batchedTallyPositions) {
-                previousTallyCommitment = await submitTallyForPosition(position, previousTallyCommitment);
+                const submission = await submitTallyForPosition(position, previousTallyCommitment);
+                previousTallyCommitment = submission.nextTallyCommitment;
+                txHashes.push(submission.txHash);
                 completedCount += 1;
                 liveView = await loadMarketView(market.marketId);
                 liveMarket = mapMarketSummary({ marketId: market.marketId, view: liveView });
@@ -922,6 +1017,7 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
                     ? "Private tally submitted and share packets uploaded. Auto-finalization is queued."
                     : `${completedCount} private tallies submitted and uploaded. Auto-finalization is queued.`,
             );
+            return txHashes;
         } catch (tallyError) {
             const message = tallyError instanceof Error ? tallyError.message : String(tallyError);
             setCommitError(
@@ -930,6 +1026,7 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
                     : message,
             );
             await onMarketRefresh?.();
+            throw tallyError;
         } finally {
             setBusy(null);
         }
@@ -966,7 +1063,6 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
             amountInStroops: BigInt(position.amountInStroops),
             salt: position.salt,
             commitment: position.commitment,
-            nullifier: position.nullifier,
             outcome: market.outcome === "YES",
             distributablePot: market.distributablePot,
             winningSideTotal: market.winningSideTotal,
@@ -983,10 +1079,11 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
         const claimedAt = Date.now();
         setSavedPositions((current) => current.map((entry) => (
             entry.commitment === position.commitment
-                ? { ...entry, claimTxHash: tx.hash, claimedAt, reputationAttestationStatus: "pending" }
+                ? { ...entry, nullifier: proof.nullifier, claimTxHash: tx.hash, claimedAt, reputationAttestationStatus: "pending" }
                 : entry
         )));
         await markClaimedPosition(walletPublic, position.commitment, {
+            nullifier: proof.nullifier,
             claimTxHash: tx.hash,
             claimedAt,
             reputationAttestationStatus: "pending",
@@ -1007,7 +1104,7 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
         await upsertPrivateReputationWitness(walletPublic, {
             marketId: market.marketId,
             commitment: position.commitment,
-            nullifier: position.nullifier,
+            nullifier: proof.nullifier,
             side: position.side,
             amountInStroops: position.amountInStroops,
             payoutInStroops: payoutInStroops.toString(),
@@ -1024,7 +1121,7 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
                 walletAddress: walletPublic,
                 marketId: market.marketId,
                 commitment: position.commitment,
-                nullifier: position.nullifier,
+                nullifier: proof.nullifier,
                 claimTxHash: tx.hash,
                 category: market.category,
                 recordCommitment,
@@ -1035,7 +1132,7 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
             await upsertPrivateReputationWitness(walletPublic, {
                 marketId: market.marketId,
                 commitment: position.commitment,
-                nullifier: position.nullifier,
+                nullifier: proof.nullifier,
                 side: position.side,
                 amountInStroops: position.amountInStroops,
                 payoutInStroops: payoutInStroops.toString(),
@@ -1058,18 +1155,23 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
             console.error("Claim attestation failed:", attestationError);
         }
 
-        return proof.payout;
+        return {
+            payout: proof.payout,
+            txHash: tx.hash,
+        };
     }
 
     async function handleClaim(position: BlindPositionRecord) {
         setBusy(position.commitment);
         setCommitError("");
         try {
-            const payout = await claimSinglePosition(position);
-            await refreshAfterMutation(`Claimed ${formatUsdc(payout)} from the market pot.`);
+            const result = await claimSinglePosition(position);
+            await refreshAfterMutation(`Claimed ${formatUsdc(result.payout)} from the market pot.`);
+            return [result.txHash];
         } catch (claimError) {
             console.error("Claim winnings failed:", claimError);
             setCommitError(claimError instanceof Error ? claimError.message : String(claimError));
+            throw claimError;
         } finally {
             setBusy(null);
         }
@@ -1077,16 +1179,19 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
 
     async function handleClaimAll() {
         if (claimablePositions.length === 0) {
-            return;
+            return [];
         }
 
         setBusy("claim-batch");
         setCommitError("");
         let completedCount = 0;
         let totalPayout = 0n;
+        const txHashes: string[] = [];
         try {
             for (const position of claimablePositions) {
-                totalPayout += await claimSinglePosition(position);
+                const result = await claimSinglePosition(position);
+                totalPayout += result.payout;
+                txHashes.push(result.txHash);
                 completedCount += 1;
             }
             await refreshAfterMutation(
@@ -1094,6 +1199,7 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
                     ? `Claimed ${formatUsdc(totalPayout)} from the market pot.`
                     : `Claimed ${formatUsdc(totalPayout)} across ${completedCount} positions.`,
             );
+            return txHashes;
         } catch (claimError) {
             console.error("Batch claim failed:", claimError);
             const message = claimError instanceof Error ? claimError.message : String(claimError);
@@ -1102,8 +1208,37 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
                     ? `${completedCount} claim${completedCount === 1 ? "" : "s"} completed before the batch stopped. ${message}`
                     : message,
             );
+            throw claimError;
         } finally {
             setBusy(null);
+        }
+    }
+
+    async function handleApproveActionReview() {
+        if (!preparedAction) {
+            return;
+        }
+
+        setActionReviewError("");
+        setActionTxHashes([]);
+
+        try {
+            if (preparedAction.kind === "tally") {
+                const txHashes = await handleSubmitAllTallies();
+                setActionTxHashes(txHashes);
+                return;
+            }
+
+            if (preparedAction.positions.length === 1) {
+                const txHashes = await handleClaim(preparedAction.positions[0]);
+                setActionTxHashes(txHashes);
+                return;
+            }
+
+            const txHashes = await handleClaimAll();
+            setActionTxHashes(txHashes);
+        } catch (actionError) {
+            setActionReviewError(actionError instanceof Error ? actionError.message : String(actionError));
         }
     }
 
@@ -1559,7 +1694,7 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
                                     <button
                                         className="mb-4 w-full rounded-2xl border border-white/10 bg-white px-4 py-3 text-xs font-black uppercase tracking-[0.2em] text-black transition-colors hover:bg-white/90 disabled:opacity-60"
                                         disabled={busy === "tally-batch"}
-                                        onClick={() => void handleSubmitAllTallies()}
+                                        onClick={() => void handleOpenTallyReview()}
                                     >
                                         {busy === "tally-batch"
                                             ? "Submitting tallies..."
@@ -1581,7 +1716,7 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
                                     ) : (
                                         walletPositions.map((position, index) => {
                                             const amount = BigInt(position.amountInStroops);
-                                            const payout = payoutForPosition(market, amount);
+                                            const payout = expectedPayoutForPosition(position, market);
                                             return (
                                                 <div key={position.commitment} className="rounded-2xl border border-white/5 bg-black/20 p-4">
                                                     <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1608,11 +1743,80 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
                                                         </div>
                                                         <div>
                                                             <p className="mb-1.5 text-[9px] font-black uppercase tracking-[0.22em] text-white/20">Expected Payout</p>
-                                                            <p className="font-semibold text-white">{market.resolved ? formatUsdc(payout) : "Pending"}</p>
+                                                            <p className="font-semibold text-white">{market.resolved ? (payout !== null ? formatUsdc(payout) : "Not eligible") : "Pending"}</p>
                                                         </div>
                                                     </div>
                                                     <div className="mt-4 border-t border-white/6 pt-3 text-[11px] font-mono text-white/35 break-all">
                                                         {position.commitment}
+                                                    </div>
+                                                    <div className="mt-4 overflow-hidden rounded-2xl border border-white/6 bg-white/[0.02]">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setExpandedPositionDetails((current) => (
+                                                                current === position.commitment ? null : position.commitment
+                                                            ))}
+                                                            className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-[10px] font-black uppercase tracking-[0.18em] text-white/55 transition-colors hover:bg-white/[0.03] hover:text-white/75"
+                                                            aria-expanded={expandedPositionDetails === position.commitment}
+                                                        >
+                                                            <span>Advanced details</span>
+                                                            <motion.span
+                                                                animate={{ rotate: expandedPositionDetails === position.commitment ? 180 : 0 }}
+                                                                transition={{ duration: 0.2, ease: "easeOut" }}
+                                                                className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-white/8 bg-black/20"
+                                                            >
+                                                                <ChevronDown className="h-3.5 w-3.5" />
+                                                            </motion.span>
+                                                        </button>
+                                                        <AnimatePresence initial={false}>
+                                                            {expandedPositionDetails === position.commitment ? (
+                                                                <motion.div
+                                                                    initial={{ height: 0, opacity: 0 }}
+                                                                    animate={{ height: "auto", opacity: 1 }}
+                                                                    exit={{ height: 0, opacity: 0 }}
+                                                                    transition={{ duration: 0.24, ease: "easeOut" }}
+                                                                    className="overflow-hidden border-t border-white/6"
+                                                                >
+                                                                    <div className="grid gap-3 px-4 py-4 text-[11px]">
+                                                                        <div>
+                                                                            <p className="mb-1 text-[9px] font-black uppercase tracking-[0.2em] text-white/25">Commitment Hash</p>
+                                                                            <p className="font-mono break-all text-white/60">{position.commitment}</p>
+                                                                        </div>
+                                                                        <div>
+                                                                            <p className="mb-1 text-[9px] font-black uppercase tracking-[0.2em] text-white/25">Nullifier</p>
+                                                                            <p className="font-mono break-all text-white/60">{position.nullifier}</p>
+                                                                        </div>
+                                                                        <div>
+                                                                            <p className="mb-1 text-[9px] font-black uppercase tracking-[0.2em] text-white/25">Salt</p>
+                                                                            <p className="font-mono break-all text-white/60">{position.salt}</p>
+                                                                        </div>
+                                                                        {position.commitTxHash ? (
+                                                                            <div>
+                                                                                <p className="mb-1 text-[9px] font-black uppercase tracking-[0.2em] text-white/25">Commit Tx Hash</p>
+                                                                                <p className="font-mono break-all text-white/60">{position.commitTxHash}</p>
+                                                                            </div>
+                                                                        ) : null}
+                                                                        {position.tallyTxHash ? (
+                                                                            <div>
+                                                                                <p className="mb-1 text-[9px] font-black uppercase tracking-[0.2em] text-white/25">Tally Tx Hash</p>
+                                                                                <p className="font-mono break-all text-white/60">{position.tallyTxHash}</p>
+                                                                            </div>
+                                                                        ) : null}
+                                                                        {position.claimTxHash ? (
+                                                                            <div>
+                                                                                <p className="mb-1 text-[9px] font-black uppercase tracking-[0.2em] text-white/25">Claim Tx Hash</p>
+                                                                                <p className="font-mono break-all text-white/60">{position.claimTxHash}</p>
+                                                                            </div>
+                                                                        ) : null}
+                                                                        {position.shareCommitmentRoot ? (
+                                                                            <div>
+                                                                                <p className="mb-1 text-[9px] font-black uppercase tracking-[0.2em] text-white/25">Share Commitment Root</p>
+                                                                                <p className="font-mono break-all text-white/60">{position.shareCommitmentRoot}</p>
+                                                                            </div>
+                                                                        ) : null}
+                                                                    </div>
+                                                                </motion.div>
+                                                            ) : null}
+                                                        </AnimatePresence>
                                                     </div>
                                                     {position.tallyStatus === "share_upload_failed" ? (
                                                         <div className="mt-4 rounded-2xl border border-amber-400/15 bg-amber-400/[0.06] px-4 py-3 text-xs font-black uppercase tracking-[0.18em] text-amber-100/80">
@@ -1622,11 +1826,11 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
                                                         <div className="mt-4 rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3 text-xs font-black uppercase tracking-[0.18em] text-white/60">
                                                             Included in next tally batch
                                                         </div>
-                                                    ) : position.tallyStatus === "tally_submitted" || position.tallyStatus === "queued_for_auto_finalization" ? (
+                                                    ) : !market.resolved && (position.tallyStatus === "tally_submitted" || position.tallyStatus === "queued_for_auto_finalization") ? (
                                                         <div className="mt-4 rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3 text-xs font-black uppercase tracking-[0.18em] text-white/60">
                                                             Queued for auto-finalization
                                                         </div>
-                                                    ) : position.tallyStatus === "finalizing" ? (
+                                                    ) : !market.resolved && position.tallyStatus === "finalizing" ? (
                                                         <div className="mt-4 rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3 text-xs font-black uppercase tracking-[0.18em] text-white/60">
                                                             Finalizing
                                                         </div>
@@ -1869,7 +2073,7 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
                             </div>
                             {claimablePositions.length > 1 ? (
                                 <button
-                                    onClick={() => void handleClaimAll()}
+                                    onClick={() => void handleOpenClaimReview()}
                                     disabled={busy === "claim-batch"}
                                     className="inline-flex h-11 items-center justify-center rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-4 text-[11px] font-black uppercase tracking-[0.18em] text-emerald-100 transition-colors hover:bg-emerald-500/15 disabled:opacity-60"
                                 >
@@ -1898,7 +2102,7 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
                                                 {position.commitment}
                                             </p>
                                             <button
-                                                onClick={() => void handleClaim(position)}
+                                                onClick={() => void handleOpenClaimReview(position)}
                                                 disabled={busy === position.commitment}
                                                 className="w-full rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-[10px] uppercase tracking-[0.22em] font-black text-emerald-200 hover:bg-emerald-500/15 transition-colors disabled:opacity-60"
                                             >
@@ -1950,7 +2154,7 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
                                 </p>
                             </div>
 
-                            <div className="rounded-[24px] border border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.015))] p-4">
+                            {!commitTxHash ? (<div className="rounded-[24px] border border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.015))] p-4">
                                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                                     <div className="min-w-0">
                                         <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/35">Signing Wallet</p>
@@ -2030,7 +2234,7 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
                                     </div>
                                 ) : null}
 
-                            </div>
+                            </div>) : null}
 
                             {commitTxHash ? (
                                 <div className="rounded-[24px] border border-emerald-500/20 bg-[linear-gradient(180deg,rgba(16,185,129,0.14),rgba(255,255,255,0.02))] p-6 sm:p-7">
@@ -2059,6 +2263,13 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
                                                 View Explorer
                                                 <ExternalLink className="h-3.5 w-3.5" />
                                             </a>
+                                            <button
+                                                type="button"
+                                                onClick={(e) => { e.stopPropagation(); resetCommitReview(); }}
+                                                className="h-11 px-5 rounded-xl border border-emerald-400/30 bg-emerald-500/10 text-[11px] font-black uppercase tracking-[0.18em] text-emerald-200 transition-all hover:bg-emerald-500/20 active:scale-[0.99] flex items-center justify-center"
+                                            >
+                                                Done
+                                            </button>
                                         </div>
                                     </div>
                                 </div>
@@ -2090,6 +2301,206 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
                                     </div>
                                 </div>
                             )}
+                        </div>
+                    </div>
+                </div>
+            ) : null}
+
+            {isActionReviewOpen && preparedAction ? (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 px-4 py-4 backdrop-blur-md">
+                    <div className="relative max-h-[88vh] w-full max-w-[760px] overflow-y-auto rounded-[28px] border border-white/10 bg-[#0b0b0e] shadow-[0_32px_120px_rgba(0,0,0,0.55)]">
+                        <button
+                            type="button"
+                            onClick={() => {
+                                const actionBusy = preparedAction.kind === "tally" ? busy === "tally-batch" : busy === "claim-batch" || busy === preparedAction.positions[0]?.commitment;
+                                if (actionBusy) {
+                                    return;
+                                }
+                                resetActionReview();
+                            }}
+                            className="absolute right-5 top-5 z-10 rounded-full border border-white/10 bg-white/[0.03] p-2 text-white/50 transition-colors hover:text-white"
+                        >
+                            <X className="h-4 w-4" />
+                        </button>
+
+                        <div className="space-y-4 p-4 sm:p-5">
+                            <div>
+                                <p className="text-[10px] font-black text-white/40 uppercase tracking-[0.22em] mb-2">Review & Approve</p>
+                                <h3 className="text-lg font-black text-white tracking-tight">
+                                    {actionTxHashes.length > 0 ? "Transaction confirmed" : "Approve transaction"}
+                                </h3>
+                                <p className="mt-1 text-sm text-white/50">
+                                    {actionTxHashes.length > 0
+                                        ? preparedAction.kind === "tally"
+                                            ? "Your private tally transaction is confirmed. Share uploads and auto-finalization are queued."
+                                            : "Your claim transaction is confirmed. You can inspect the receipt or close this modal."
+                                        : `Review this ${preparedAction.kind} action before signing on ${currentNetworkLabel()}.`}
+                                </p>
+                            </div>
+
+                            {actionTxHashes.length === 0 ? (
+                                <div className="rounded-[24px] border border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.015))] p-4">
+                                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                        <div className="min-w-0">
+                                            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/35">Signing Wallet</p>
+                                            <div className="group relative mt-1 inline-flex max-w-full">
+                                                <p className="text-sm font-semibold text-white">
+                                                    {walletPublic ? shortenAddress(walletPublic) : "Wallet not connected"}
+                                                </p>
+                                                {walletPublic ? (
+                                                    <div className="pointer-events-none absolute left-0 top-full z-20 mt-2 w-max max-w-[18rem] rounded-xl border border-white/10 bg-[#0d0d10] px-3 py-2 text-[11px] font-medium tracking-normal text-white/70 opacity-0 shadow-2xl transition-opacity group-hover:opacity-100">
+                                                        {walletPublic}
+                                                    </div>
+                                                ) : null}
+                                            </div>
+                                        </div>
+                                        <div className="inline-flex items-center gap-2 self-start rounded-full border border-violet-500/20 bg-violet-500/10 px-3 py-1">
+                                            <span className="h-2 w-2 rounded-full bg-violet-300" />
+                                            <span className="text-[10px] font-black uppercase tracking-[0.2em] text-violet-200">{isTestnet ? "Testnet" : "Mainnet"}</span>
+                                        </div>
+                                    </div>
+
+                                    <div className="mt-3 grid grid-cols-2 gap-2.5">
+                                        <div className="rounded-2xl border border-white/6 bg-black/20 p-3">
+                                            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/25">Available XLM</p>
+                                            <p className="mt-1.5 text-lg font-semibold text-white">{formatDecimalAmount(xlmSpendableBalance, 4)} XLM</p>
+                                        </div>
+                                        <div className="rounded-2xl border border-white/6 bg-black/20 p-3">
+                                            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/25">Available USDC</p>
+                                            <p className="mt-1.5 text-lg font-semibold text-white">{formatUsdc(usdcBalance)}</p>
+                                        </div>
+                                    </div>
+
+                                    <div className="mt-3 border-t border-white/8 pt-3">
+                                        <div className="flex items-start justify-between gap-4">
+                                            <div className="min-w-0">
+                                                <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/30">Action</p>
+                                                <h4 className="mt-1.5 text-base font-black leading-tight text-white break-words">
+                                                    {preparedAction.kind === "tally"
+                                                        ? preparedAction.positions.length === 1
+                                                            ? "Submit 1 private tally"
+                                                            : `Submit ${preparedAction.positions.length} private tallies`
+                                                        : preparedAction.positions.length === 1
+                                                            ? "Claim 1 winning position"
+                                                            : `Claim ${preparedAction.positions.length} winning positions`}
+                                                </h4>
+                                            </div>
+                                            <div className={`shrink-0 rounded-full border px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] ${
+                                                preparedAction.kind === "tally"
+                                                    ? "border-violet-500/20 bg-violet-500/10 text-violet-300"
+                                                    : "border-emerald-500/20 bg-emerald-500/10 text-emerald-300"
+                                            }`}>
+                                                {preparedAction.kind}
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="mt-3 border-t border-white/8 pt-3">
+                                        <div className="grid grid-cols-2 gap-2.5">
+                                            <div className="rounded-2xl border border-white/6 bg-black/20 p-3">
+                                                <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/25">Positions</p>
+                                                <p className="mt-1.5 text-base font-semibold text-white">{preparedAction.positions.length}</p>
+                                            </div>
+                                            <div className="rounded-2xl border border-white/6 bg-black/20 p-3">
+                                                <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/25">
+                                                    {preparedAction.kind === "tally" ? "Workflow" : "Payout"}
+                                                </p>
+                                                <p className="mt-1.5 text-base font-semibold text-white">
+                                                    {preparedAction.kind === "tally"
+                                                        ? preparedAction.retryCount > 0
+                                                            ? `${preparedAction.newCount} new / ${preparedAction.retryCount} retry`
+                                                            : `${preparedAction.newCount} new`
+                                                        : formatUsdc(preparedAction.totalPayout)}
+                                                </p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="rounded-[24px] border border-emerald-500/20 bg-[linear-gradient(180deg,rgba(16,185,129,0.14),rgba(255,255,255,0.02))] p-6 sm:p-7">
+                                    <div className="flex flex-col items-center text-center">
+                                        <div className="flex h-16 w-16 items-center justify-center rounded-full border border-emerald-400/30 bg-emerald-500/12 shadow-[0_0_40px_rgba(16,185,129,0.16)]">
+                                            <Check className="h-8 w-8 text-emerald-300" />
+                                        </div>
+                                        <p className="mt-5 text-[10px] font-black uppercase tracking-[0.22em] text-emerald-300/70">Transaction Confirmed</p>
+                                        <h4 className="mt-2 text-xl font-black tracking-tight text-white">
+                                            {preparedAction.kind === "tally" ? "Tally approved successfully" : "Claim approved successfully"}
+                                        </h4>
+                                        <p className="mt-2 max-w-md text-sm text-white/50">
+                                            {preparedAction.kind === "tally"
+                                                ? "Your hidden positions have been submitted into the private tally flow."
+                                                : "Your winning commitment has been claimed onchain and your receipt is ready."}
+                                        </p>
+
+                                        <div className="mt-6 w-full max-w-2xl rounded-2xl border border-white/8 bg-black/20 p-4 text-left">
+                                            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/30">
+                                                {actionTxHashes.length === 1 ? "Transaction Hash" : "Transaction Hashes"}
+                                            </p>
+                                            <div className="mt-2 space-y-2">
+                                                {actionTxHashes.map((hash) => (
+                                                    <p key={hash} className="text-sm font-mono text-white break-all">{hash}</p>
+                                                ))}
+                                            </div>
+                                        </div>
+
+                                        <div className="mt-5 flex flex-col gap-3 sm:flex-row">
+                                            {actionTxHashes[0] ? (
+                                                <a
+                                                    href={explorerTransactionUrl(actionTxHashes[0])}
+                                                    target="_blank"
+                                                    rel="noreferrer"
+                                                    className="h-11 px-5 bg-white text-black rounded-xl font-bold text-[11px] uppercase tracking-[0.18em] hover:bg-emerald-50 active:scale-[0.99] transition-all flex items-center justify-center gap-2"
+                                                >
+                                                    View Explorer
+                                                    <ExternalLink className="h-3.5 w-3.5" />
+                                                </a>
+                                            ) : null}
+                                            <button
+                                                type="button"
+                                                onClick={(e) => { e.stopPropagation(); resetActionReview(); }}
+                                                className="h-11 px-5 rounded-xl border border-emerald-400/30 bg-emerald-500/10 text-[11px] font-black uppercase tracking-[0.18em] text-emerald-200 transition-all hover:bg-emerald-500/20 active:scale-[0.99] flex items-center justify-center"
+                                            >
+                                                Done
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {actionTxHashes.length === 0 ? (
+                                <div className="space-y-4">
+                                    {actionReviewError ? (
+                                        <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-4">
+                                            <p className="text-[11px] text-red-300">{actionReviewError}</p>
+                                        </div>
+                                    ) : null}
+
+                                    <div className="flex items-center justify-end gap-3">
+                                        <button
+                                            type="button"
+                                            onClick={() => resetActionReview()}
+                                            disabled={busy === "tally-batch" || busy === "claim-batch" || busy === preparedAction.positions[0]?.commitment}
+                                            className="h-10 rounded-xl border border-white/10 px-5 text-[11px] font-black uppercase tracking-[0.18em] text-white/70 transition-colors hover:bg-white/[0.05] disabled:opacity-60"
+                                        >
+                                            Cancel
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => void handleApproveActionReview()}
+                                            disabled={busy === "tally-batch" || busy === "claim-batch" || busy === preparedAction.positions[0]?.commitment}
+                                            className="h-10 rounded-xl bg-white px-5 text-[11px] font-black uppercase tracking-[0.18em] text-black transition-all hover:bg-violet-50 disabled:opacity-60"
+                                        >
+                                            {preparedAction.kind === "tally"
+                                                ? busy === "tally-batch"
+                                                    ? "Submitting..."
+                                                    : "Approve Tally"
+                                                : (busy === "claim-batch" || busy === preparedAction.positions[0]?.commitment)
+                                                    ? "Claiming..."
+                                                    : "Approve Claim"}
+                                        </button>
+                                    </div>
+                                </div>
+                            ) : null}
                         </div>
                     </div>
                 </div>
