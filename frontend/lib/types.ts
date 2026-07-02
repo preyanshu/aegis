@@ -13,6 +13,7 @@ export interface BlindResolvedCondition extends BlindMarketCondition {
 
 export interface BlindMarketSummary {
     marketId: string;
+    creationIndex: number;
     question: string;
     category: string;
     creator: string;

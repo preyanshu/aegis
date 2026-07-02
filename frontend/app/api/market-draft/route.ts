@@ -64,7 +64,59 @@ function parsePositiveNumberString(value: unknown) {
   return normalized;
 }
 
-function normalizeResolutionDateTime(value: unknown) {
+function padTwoDigits(value: number) {
+  return String(value).padStart(2, "0");
+}
+
+function formatNaiveDateTimeFromParts(year: number, month: number, day: number, hour: number, minute: number) {
+  return `${year}-${padTwoDigits(month)}-${padTwoDigits(day)}T${padTwoDigits(hour)}:${padTwoDigits(minute)}`;
+}
+
+function formatNaiveDateTimeForOffset(date: Date, offsetMinutes: number) {
+  const shifted = new Date(date.getTime() - offsetMinutes * 60_000);
+  return formatNaiveDateTimeFromParts(
+    shifted.getUTCFullYear(),
+    shifted.getUTCMonth() + 1,
+    shifted.getUTCDate(),
+    shifted.getUTCHours(),
+    shifted.getUTCMinutes(),
+  );
+}
+
+function parseNaiveDateTime(value: string, offsetMinutes: number) {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::\d{2})?$/);
+  if (!match) {
+    return null;
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const utcMillis = Date.UTC(year, month - 1, day, hour, minute) + offsetMinutes * 60_000;
+  const candidate = new Date(utcMillis);
+
+  if (
+    Number.isNaN(candidate.getTime())
+    || candidate.getUTCFullYear() !== year
+    || candidate.getUTCMonth() + 1 !== month
+    || candidate.getUTCDate() !== day
+  ) {
+    return null;
+  }
+
+  return {
+    timestampMillis: utcMillis,
+    normalized: formatNaiveDateTimeFromParts(year, month, day, hour, minute),
+  };
+}
+
+function normalizeResolutionDateTime(
+  value: unknown,
+  referenceTimestampSeconds: number,
+  browserUtcOffsetMinutes: number,
+) {
   if (typeof value !== "string") {
     return null;
   }
@@ -74,22 +126,26 @@ function normalizeResolutionDateTime(value: unknown) {
     return null;
   }
 
+  const referenceTime = referenceTimestampSeconds > 0 ? referenceTimestampSeconds * 1000 : Date.now();
+  const naiveCandidate = parseNaiveDateTime(trimmed, browserUtcOffsetMinutes);
+
+  if (naiveCandidate) {
+    return naiveCandidate.timestampMillis > referenceTime ? naiveCandidate.normalized : null;
+  }
+
   const parsed = new Date(trimmed);
-  const parsedAsUtc = Number.isNaN(parsed.getTime()) ? null : parsed;
-  const utcCandidate = trimmed.match(/[zZ]|[+-]\d{2}:?\d{2}$/) ? parsedAsUtc : new Date(`${trimmed}Z`);
-
-  const futureParsed = [parsedAsUtc, utcCandidate].find((candidate) => (
-    candidate !== null && !Number.isNaN(candidate.getTime()) && candidate.getTime() > Date.now()
-  ));
-
-  if (!futureParsed) {
+  if (Number.isNaN(parsed.getTime()) || parsed.getTime() <= referenceTime) {
     return null;
   }
 
-  return futureParsed.toISOString().slice(0, 16);
+  return formatNaiveDateTimeForOffset(parsed, browserUtcOffsetMinutes);
 }
 
-function validateDraftPayload(raw: unknown) {
+function validateDraftPayload(
+  raw: unknown,
+  referenceTimestampSeconds: number,
+  browserUtcOffsetMinutes: number,
+) {
   if (!raw || typeof raw !== "object") {
     throw new Error("AI returned an empty market draft.");
   }
@@ -97,7 +153,11 @@ function validateDraftPayload(raw: unknown) {
   const draft = raw as Partial<DraftPayload>;
   const question = typeof draft.question === "string" ? draft.question.trim() : "";
   const category = typeof draft.category === "string" ? draft.category.trim().toLowerCase() : "";
-  const resolutionDateTime = normalizeResolutionDateTime(draft.resolutionDateTime);
+  const resolutionDateTime = normalizeResolutionDateTime(
+    draft.resolutionDateTime,
+    referenceTimestampSeconds,
+    browserUtcOffsetMinutes,
+  );
   const minBet = parsePositiveNumberString(draft.minBet) ?? "1";
   const maxBet = parsePositiveNumberString(draft.maxBet) ?? "25";
   const feeBps = parsePositiveNumberString(draft.feeBps) ?? DEFAULT_FEE_BPS;
@@ -188,7 +248,14 @@ function promptMentionsSupportedAsset(prompt: string) {
   });
 }
 
-async function requestDraftFromModel(prompt: string) {
+async function requestDraftFromModel(
+  prompt: string,
+  referenceTimestampSeconds: number,
+  browserTimeZone: string,
+  browserUtcOffsetMinutes: number,
+) {
+  const referenceDate = new Date(referenceTimestampSeconds > 0 ? referenceTimestampSeconds * 1000 : Date.now());
+  const referenceLocalDateTime = formatNaiveDateTimeForOffset(referenceDate, browserUtcOffsetMinutes);
   const systemPrompt = [
     "You convert user prompts into private prediction market drafts.",
     "Return JSON only. No markdown. No prose outside JSON.",
@@ -200,11 +267,19 @@ async function requestDraftFromModel(prompt: string) {
     "- The market must resolve from exact oracle math only.",
     "- If the prompt does not clearly reference one of the supported oracle assets, reject it.",
     "- Use only supported assets from the catalog.",
-    "- The resolutionDateTime must be future-dated.",
+    `- The current Stellar ledger timestamp is ${referenceTimestampSeconds}. Treat this as the reference 'now' for all relative time reasoning.`,
+    `- The corresponding reference time is ${referenceDate.toISOString()}. Use it to derive exact future resolutionDateTime values.`,
+    `- The user's local timezone is ${browserTimeZone}.`,
+    `- The user's local UTC offset in minutes is ${browserUtcOffsetMinutes}.`,
+    `- In the user's local time, the current timestamp is ${referenceLocalDateTime}.`,
+    "- The resolutionDateTime must be future-dated relative to the provided ledger timestamp.",
+    "- Return resolutionDateTime as a timezone-free local datetime in exactly YYYY-MM-DDTHH:mm format.",
+    "- Do not return a Z suffix, UTC offset, seconds, or any other timezone marker in resolutionDateTime.",
     "- If the prompt gives a month and day without a year, infer the correct year so the date is in the future.",
     "- If the prompt omits a time but the date is otherwise clear, default to 12:00.",
     "- Relative dates like 'this month', 'tomorrow', 'after 2 days', 'after 5 min', or 'in 5 minutes from now' are acceptable and must be converted into one exact future timestamp.",
     "- Calculate the exact future resolutionDateTime yourself from relative phrases.",
+    "- If the prompt is ambiguous about time, prefer a conservative future expiry that is comfortably after the reference ledger timestamp.",
     "- If the prompt depends on sentiment, volume, dominance, market cap, ETF approval odds, or any unsupported data, reject it.",
     "- You can create between 1 and 5 conditions.",
     "- Prefer one condition unless the prompt clearly asks for multiple conditions.",
@@ -263,8 +338,23 @@ async function requestDraftFromModel(prompt: string) {
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json().catch(() => null) as { prompt?: string } | null;
+    const body = await request.json().catch(() => null) as {
+      prompt?: string;
+      currentLedgerTimestamp?: number;
+      browserTimeZone?: string;
+      browserUtcOffsetMinutes?: number;
+    } | null;
     const prompt = body?.prompt?.trim() ?? "";
+    const currentLedgerTimestamp = Number(body?.currentLedgerTimestamp ?? 0);
+    const browserTimeZone = typeof body?.browserTimeZone === "string" && body.browserTimeZone.trim()
+      ? body.browserTimeZone.trim()
+      : "UTC";
+    const browserUtcOffsetMinutes = Number.isFinite(Number(body?.browserUtcOffsetMinutes))
+      ? Number(body?.browserUtcOffsetMinutes)
+      : 0;
+    const referenceTimestampSeconds = Number.isFinite(currentLedgerTimestamp) && currentLedgerTimestamp > 0
+      ? Math.floor(currentLedgerTimestamp)
+      : Math.floor(Date.now() / 1000);
 
     if (!prompt) {
       return NextResponse.json({ error: "Enter a market prompt first." }, { status: 400 });
@@ -284,7 +374,12 @@ export async function POST(request: Request) {
       );
     }
 
-    const parsed = await requestDraftFromModel(prompt);
+    const parsed = await requestDraftFromModel(
+      prompt,
+      referenceTimestampSeconds,
+      browserTimeZone,
+      browserUtcOffsetMinutes,
+    );
 
     if (!parsed.ok) {
       return NextResponse.json(
@@ -294,7 +389,7 @@ export async function POST(request: Request) {
     }
 
     try {
-      const draft = validateDraftPayload(parsed.draft);
+      const draft = validateDraftPayload(parsed.draft, referenceTimestampSeconds, browserUtcOffsetMinutes);
       return NextResponse.json({ draft });
     } catch (error) {
       console.error("market-draft validation failed", {

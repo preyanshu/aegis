@@ -198,7 +198,7 @@ export const Navbar = ({ transparent = true }: NavbarProps) => {
         { name: 'Overview', href: '#hero' },
         { name: 'How It Works', href: '#features' },
         { name: 'Signals', href: '#stats' },
-        { name: 'Docs', href: 'https://github.com/preyanshu/verdict' }
+        { name: 'Docs', href: 'https://github.com/preyanshu/aegis' }
     ];
 
     const dashboardLinks = [
@@ -208,7 +208,7 @@ export const Navbar = ({ transparent = true }: NavbarProps) => {
         { name: 'Agents', href: '/dashboard/agents' },
         { name: 'Sources', href: '/dashboard/sources' },
         { name: 'History', href: '/dashboard/history' },
-        { name: 'Docs', href: 'https://github.com/preyanshu/verdict' }
+        { name: 'Docs', href: 'https://github.com/preyanshu/aegis' }
     ];
 
     const currentLinks = isLandingPage ? landingLinks : dashboardLinks;

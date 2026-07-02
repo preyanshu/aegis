@@ -1946,9 +1946,9 @@ export function MarketDetailView({ market, onBack, onMarketRefresh }: MarketDeta
                                             onChange={(event) => setCommitAmountUsdc(event.target.value)}
                                             className="bg-transparent border-none text-xl sm:text-2xl font-bold text-white focus:outline-none flex-1 w-full min-w-0 appearance-none [moz-appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                                         />
-                                        <div className="bg-white/10 px-3 py-1.5 rounded-xl flex items-center gap-2 shrink-0">
-                                            <div className="w-5 h-5 rounded-full bg-white/15 flex items-center justify-center text-[10px] font-black text-white">U</div>
-                                            <span className="text-sm font-bold text-white">USDC</span>
+                                        <div className="bg-emerald-500/10 px-3 py-1.5 rounded-xl flex items-center gap-2 shrink-0 border border-emerald-400/15">
+                                            <div className="w-5 h-5 rounded-full bg-emerald-400/15 flex items-center justify-center text-[10px] font-black text-emerald-300">U</div>
+                                            <span className="text-sm font-bold text-emerald-300">USDC</span>
                                         </div>
                                     </div>
                                 </div>

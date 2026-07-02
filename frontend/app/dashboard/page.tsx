@@ -15,6 +15,7 @@ import { Loader2, Plus, Search, ChevronDown, Filter, ArrowDownUp, X } from "luci
 type StellarMarketRow = {
   marketId: string;
   view: MarketView;
+  creationIndex: number;
 };
 
 type SortBy = "newest" | "oldest" | "largest" | "smallest" | "status" | "ends_soon" | "ends_late" | "min_bet_high" | "min_bet_low" | "max_bet_high" | "max_bet_low";
@@ -39,15 +40,20 @@ export default function DashboardPage() {
   const fetchMarkets = async () => {
     const marketIds = await loadMarketIds();
     const settled = await Promise.allSettled(
-      marketIds.map(async (marketId) => ({
+      marketIds.map(async (marketId, creationIndex) => ({
         marketId,
+        creationIndex,
         view: await loadMarketView(marketId),
       })),
     );
 
     const nextRows = settled.flatMap((result) => {
       if (result.status === "fulfilled") {
-        return [{ marketId: result.value.marketId, view: result.value.view }];
+        return [{
+          marketId: result.value.marketId,
+          view: result.value.view,
+          creationIndex: result.value.creationIndex,
+        }];
       }
 
       console.warn("Skipping unreadable market during dashboard refresh:", result.reason);
@@ -64,8 +70,9 @@ export default function DashboardPage() {
       try {
         const marketIds = await loadMarketIds();
         const settled = await Promise.allSettled(
-          marketIds.map(async (marketId) => ({
+          marketIds.map(async (marketId, creationIndex) => ({
             marketId,
+            creationIndex,
             view: await loadMarketView(marketId),
           })),
         );
@@ -75,7 +82,11 @@ export default function DashboardPage() {
 
         const nextRows = settled.flatMap((result) => {
           if (result.status === "fulfilled") {
-            return [{ marketId: result.value.marketId, view: result.value.view }];
+            return [{
+              marketId: result.value.marketId,
+              view: result.value.view,
+              creationIndex: result.value.creationIndex,
+            }];
           }
 
           console.warn("Skipping unreadable market during dashboard boot:", result.reason);
@@ -139,13 +150,13 @@ export default function DashboardPage() {
         if (sortBy === "min_bet_low") return Number(left.minBet - right.minBet);
         if (sortBy === "max_bet_high") return Number(right.maxBet - left.maxBet);
         if (sortBy === "max_bet_low") return Number(left.maxBet - right.maxBet);
-        if (sortBy === "oldest") return left.endTimestamp - right.endTimestamp;
+        if (sortBy === "oldest") return left.creationIndex - right.creationIndex;
         
         if (sortBy === "status") {
-          if (left.resolved === right.resolved) return left.endTimestamp - right.endTimestamp;
+          if (left.resolved === right.resolved) return right.creationIndex - left.creationIndex;
           return left.resolved ? 1 : -1;
         }
-        return right.endTimestamp - left.endTimestamp;
+        return right.creationIndex - left.creationIndex;
       });
   }, [markets, searchQuery, sortBy, filterStatus, now]);
 

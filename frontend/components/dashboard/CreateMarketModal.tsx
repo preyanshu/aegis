@@ -8,7 +8,7 @@ import { ArrowLeft, ArrowRight, Check, Info, Loader2, Sparkles, Wand2, Wallet, X
 import { ensurePrivyStellarWallet, isPrivyStellarWalletLimitError } from "@/lib/privy-stellar-wallet";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { TRUSTED_DATA_SOURCES } from "@/lib/data-sources";
-import { createMarketWithPrivyWallet, estimateCreateMarketFee, fundStellarTestnetAddress, getBrowserConfig, getPrivyStellarWallet, loadReflectorPrice, loadStellarNativeBalanceSummary, loadUsdcBalance } from "@/lib/stellar";
+import { createMarketWithPrivyWallet, estimateCreateMarketFee, fundStellarTestnetAddress, getBrowserConfig, getPrivyStellarWallet, loadLatestLedgerTimestamp, loadReflectorPrice, loadStellarNativeBalanceSummary, loadUsdcBalance } from "@/lib/stellar";
 
 interface CreateMarketModalProps {
     isOpen: boolean;
@@ -329,7 +329,7 @@ export function CreateMarketModal({ isOpen, onClose, onCreated }: CreateMarketMo
     ]);
     const stellarWalletAddress = stellarWallet?.address ?? null;
     const [step, setStep] = useState(1);
-    const [question, setQuestion] = useState("Will BTC remain below $50,000 by expiry?");
+    const [question, setQuestion] = useState("Will BTC remain above $50,000 by expiry?");
     const [category, setCategory] = useState("macro");
     const [draftConditions, setDraftConditions] = useState<DraftCondition[]>([defaultDraftCondition()]);
     const [endTimestamp, setEndTimestamp] = useState(() => Math.floor(Date.now() / 1000 + 7 * 24 * 60 * 60).toString());
@@ -527,7 +527,7 @@ export function CreateMarketModal({ isOpen, onClose, onCreated }: CreateMarketMo
 
     function reset() {
         setStep(1);
-        setQuestion("Will BTC remain below $50,000 by expiry?");
+        setQuestion("Will BTC remain above $50,000 by expiry?");
         setCategory("macro");
         setDraftConditions([defaultDraftCondition()]);
         const defaultEndTimestamp = Math.floor(Date.now() / 1000 + 7 * 24 * 60 * 60).toString();
@@ -552,7 +552,7 @@ export function CreateMarketModal({ isOpen, onClose, onCreated }: CreateMarketMo
     }
 
     function handleClose() {
-        if (isSubmitting) {
+        if (isSubmitting && !createdTxHash) {
             return;
         }
         // Reset state before closing to ensure modal fully cleans up
@@ -598,12 +598,18 @@ export function CreateMarketModal({ isOpen, onClose, onCreated }: CreateMarketMo
         setIsMagicLoading(true);
         setError("");
         try {
+            const currentLedgerTimestamp = await loadLatestLedgerTimestamp();
             const response = await fetch("/api/market-draft", {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
                 },
-                body: JSON.stringify({ prompt: question }),
+                body: JSON.stringify({
+                    prompt: question,
+                    currentLedgerTimestamp,
+                    browserTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                    browserUtcOffsetMinutes: new Date().getTimezoneOffset(),
+                }),
             });
             const payload = await response.json().catch(() => null) as { draft?: AiMarketDraft; error?: string } | null;
 
@@ -680,11 +686,11 @@ export function CreateMarketModal({ isOpen, onClose, onCreated }: CreateMarketMo
                 feeBps: Number(feeBps),
             });
             setCreatedTxHash(result.hash);
-            try {
-                await onCreated?.();
-            } catch (refreshError) {
+            setIsSubmitting(false);
+            void Promise.resolve(onCreated?.()).catch((refreshError) => {
                 console.warn("Market created, but dashboard refresh hit an error:", refreshError);
-            }
+            });
+            return;
         } catch (submitError) {
                 setError(submitError instanceof Error ? submitError.message : String(submitError));
             } finally {

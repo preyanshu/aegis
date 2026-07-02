@@ -1291,14 +1291,23 @@ function ReputationModal({
   onVerify,
 }: ReputationModalProps) {
   const [step, setStep] = useState(1);
+  const [isGenerateStarting, setIsGenerateStarting] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
       setStep(1);
+      setIsGenerateStarting(false);
       return;
     }
     setStep(1);
+    setIsGenerateStarting(false);
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!busy) {
+      setIsGenerateStarting(false);
+    }
+  }, [busy]);
 
   const snapshotPreview = useMemo(() => {
     if (!walletAddress || !selectedCategory || claimedRecords.length === 0) {
@@ -1944,13 +1953,14 @@ function ReputationModal({
                       setStep((current) => current + 1);
                       return;
                     }
+                    setIsGenerateStarting(true);
                     void onGenerate();
                   }}
-                  disabled={busy || !canMoveForward}
+                  disabled={busy || isGenerateStarting || !canMoveForward}
                   className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-white px-5 text-[11px] font-black uppercase tracking-[0.18em] text-black transition hover:bg-white/90 disabled:opacity-60"
                 >
-                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : step < 3 ? null : <Sparkles className="h-4 w-4" />}
-                  {step < 3 ? "Next" : busy ? "Generating..." : "Create credential"}
+                  {busy || isGenerateStarting ? <Loader2 className="h-4 w-4 animate-spin" /> : step < 3 ? null : <Sparkles className="h-4 w-4" />}
+                  {step < 3 ? "Next" : busy || isGenerateStarting ? "Generating..." : "Create credential"}
                 </button>
               </div>
             </div>

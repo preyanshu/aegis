@@ -53,9 +53,10 @@ function mapResolvedCondition(condition: ResolvedCondition): BlindResolvedCondit
   };
 }
 
-export function mapMarketSummary(row: { marketId: string; view: MarketView }): BlindMarketSummary {
+export function mapMarketSummary(row: { marketId: string; view: MarketView; creationIndex?: number }): BlindMarketSummary {
   return {
     marketId: row.marketId,
+    creationIndex: row.creationIndex ?? 0,
     question: row.view.config.question,
     category: row.view.config.category,
     creator: row.view.config.creator,
