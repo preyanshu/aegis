@@ -20,6 +20,8 @@ export type AppConfig = {
   reflectorId: string;
   usdcTokenId: string;
   commitVerifierId: string;
+  tallyUpdateVerifierId?: string;
+  tallyFinalizeVerifierId?: string;
   claimVerifierId: string;
   wallets: WalletConfig[];
 };
@@ -30,6 +32,10 @@ function requireEnv(name: string): string {
     throw new Error(`missing required env var: ${name}`);
   }
   return value;
+}
+
+function optionalEnv(name: string): string | undefined {
+  return process.env[name];
 }
 
 function wallet(label: string, secret: string | undefined): WalletConfig | null {
@@ -63,6 +69,8 @@ export function getAppConfig(): AppConfig {
     reflectorId: requireEnv("REFLECTOR_ID"),
     usdcTokenId: requireEnv("USDC_TOKEN_ID"),
     commitVerifierId: requireEnv("COMMIT_VERIFIER_ID"),
+    tallyUpdateVerifierId: optionalEnv("TALLY_UPDATE_VERIFIER_ID"),
+    tallyFinalizeVerifierId: optionalEnv("TALLY_FINALIZE_VERIFIER_ID"),
     claimVerifierId: requireEnv("CLAIM_VERIFIER_ID"),
     wallets,
   };

@@ -1,19 +1,26 @@
-import { amountUsdcToStroops, derivePositionArtifacts, marketIdToField, padHex32 } from "@/lib/proof-artifacts";
+import { amountUsdcToStroops, derivePositionArtifacts, marketIdToField, padHex32 } from "../../frontend/lib/proof-artifacts";
 import {
-  buildSnapshot,
+  buildMerkleProof,
   buildReputationPublicInputs,
-  categoryCodeForField,
+  buildSnapshot,
+  computeRecordCommitmentFallback,
   claimTypeCode,
   computeClaimMetric,
   createClaimDescriptor,
+  merkleDepth,
+  merkleLeafCount,
   serializeReputationProof,
+  verifyAttestedRecordSignature,
   stringSubjectToField,
   verifyPortableReputationClaim,
   windowDaysToField,
+  type AttestedReputationRecord,
+  type ReputationRecordInput,
+  type ReputationWindowDays,
 } from "@/lib/reputation";
 import { bytesToHex } from "@/lib/stellar";
-import { Buffer } from "buffer";
 import type { CompiledCircuit } from "@noir-lang/types";
+import { Buffer } from "buffer";
 
 type CircuitArtifact = CompiledCircuit;
 
@@ -26,18 +33,94 @@ let tallyFinalizeCircuitPromise: Promise<CircuitArtifact> | null = null;
 let claimCircuitPromise: Promise<CircuitArtifact> | null = null;
 let reputationCircuitPromise: Promise<CircuitArtifact> | null = null;
 
+function installBigIntBufferPolyfill() {
+  type BigIntBufferMethods = {
+    writeBigUInt64BE?: (value: bigint, offset?: number) => number;
+    readBigUInt64BE?: (offset?: number) => bigint;
+    writeBigInt64BE?: (value: bigint, offset?: number) => number;
+    readBigInt64BE?: (offset?: number) => bigint;
+  };
+
+  const installOnPrototype = (prototype: Uint8Array & BigIntBufferMethods) => {
+    if (!prototype.writeBigUInt64BE) {
+      prototype.writeBigUInt64BE = function writeBigUInt64BE(value: bigint, offset = 0) {
+        let remaining = BigInt.asUintN(64, value);
+        for (let index = 7; index >= 0; index -= 1) {
+          this[offset + index] = Number(remaining & 0xffn);
+          remaining >>= 8n;
+        }
+        return offset + 8;
+      };
+    }
+
+    if (!prototype.readBigUInt64BE) {
+      prototype.readBigUInt64BE = function readBigUInt64BE(offset = 0) {
+        let value = 0n;
+        for (let index = 0; index < 8; index += 1) {
+          value = (value << 8n) | BigInt(this[offset + index] ?? 0);
+        }
+        return value;
+      };
+    }
+
+    if (!prototype.writeBigInt64BE) {
+      prototype.writeBigInt64BE = function writeBigInt64BE(value: bigint, offset = 0) {
+        return this.writeBigUInt64BE!(BigInt.asUintN(64, value), offset);
+      };
+    }
+
+    if (!prototype.readBigInt64BE) {
+      prototype.readBigInt64BE = function readBigInt64BE(offset = 0) {
+        const value = this.readBigUInt64BE!(offset);
+        return value > 0x7fffffffffffffffn ? value - 0x10000000000000000n : value;
+      };
+    }
+  };
+
+  const bufferPrototype = Buffer.prototype as Buffer & {
+    writeBigUInt64BE?: (value: bigint, offset?: number) => number;
+    readBigUInt64BE?: (offset?: number) => bigint;
+    writeBigInt64BE?: (value: bigint, offset?: number) => number;
+    readBigInt64BE?: (offset?: number) => bigint;
+  };
+  installOnPrototype(bufferPrototype);
+  installOnPrototype(Uint8Array.prototype as Uint8Array & BigIntBufferMethods);
+}
+
 function randomFieldSalt() {
   const bytes = new Uint8Array(31);
   crypto.getRandomValues(bytes);
   return `0x${bytesToHex(bytes)}`;
 }
 
+export function randomWitnessSalt() {
+  return randomFieldSalt();
+}
+
+export async function computeRecordCommitment(input: {
+  walletAddress: string;
+  marketId: string;
+  category: string;
+  amountInStroops: bigint;
+  payoutInStroops: bigint;
+  won: boolean;
+  claimedAt: number;
+  witnessSalt: string;
+}) {
+  return computeRecordCommitmentFallback({
+    ...input,
+    witnessSalt: BigInt(input.witnessSalt),
+  });
+}
+
 function randomBigIntBelow(maxExclusive: bigint) {
-  if (maxExclusive <= 1n) return 0n;
+  if (maxExclusive <= 1n) {
+    return 0n;
+  }
+
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
-  const value = BigInt(`0x${bytesToHex(bytes)}`);
-  return value % maxExclusive;
+  return BigInt(`0x${bytesToHex(bytes)}`) % maxExclusive;
 }
 
 function additiveShares(total: bigint, count: number) {
@@ -53,7 +136,10 @@ function additiveShares(total: bigint, count: number) {
 }
 
 async function ensurePoseidon() {
-  // @ts-expect-error browser bundle path is intentionally deep-imported
+  installBigIntBufferPolyfill();
+  if (typeof globalThis !== "undefined") {
+    (globalThis as typeof globalThis & { Buffer?: typeof Buffer }).Buffer = Buffer;
+  }
   const { BarretenbergSync, Fr: FrBarretenberg } = await import("../node_modules/@aztec/bb.js/dest/browser/index.js");
   await BarretenbergSync.initSingleton();
   return {
@@ -76,30 +162,10 @@ function loadCircuit(path: string, current: Promise<CircuitArtifact> | null) {
   });
 }
 
-function proofDataToEnvelope(proofData: { proof: Uint8Array; publicInputs: bigint[] }) {
-  return {
-    proofHex: `0x${bytesToHex(proofData.proof)}`,
-    publicInputsHex: proofData.publicInputs.map((value) => `0x${value.toString(16)}`),
-  };
-}
-
 function envelopeToProofData(envelope: { proofHex: string; publicInputsHex: string[] }) {
   return {
     proof: Uint8Array.from(Buffer.from(envelope.proofHex.replace(/^0x/i, ""), "hex")),
-    publicInputs: envelope.publicInputsHex.map((value) => BigInt(value)),
-  };
-}
-
-function snapshotWithCircuitCommitment(snapshot: {
-  subjectId: string;
-  category: string;
-  windowDays: 30 | 90 | 180;
-  witnessSecret: bigint;
-  snapshotCommitment: bigint;
-}, commitment: bigint) {
-  return {
-    ...snapshot,
-    snapshotCommitment: commitment,
+    publicInputs: envelope.publicInputsHex.map((value) => BigInt(value).toString()),
   };
 }
 
@@ -125,7 +191,6 @@ export async function generateCommitProof(input: {
 
   const noirModule = await import("@noir-lang/noir_js");
   const noir = new noirModule.Noir(commitCircuit);
-  // @ts-expect-error browser bundle path is intentionally deep-imported
   const backendModule = await import("../node_modules/@aztec/bb.js/dest/browser/index.js");
   const backend = new backendModule.UltraHonkBackend(commitCircuit.bytecode, { threads: 1 });
   const { witness } = await noir.execute({
@@ -145,7 +210,6 @@ export async function generateCommitProof(input: {
     commitment: artifacts.commitmentHex,
     nullifier: artifacts.nullifierHex,
     proofHex: `0x${bytesToHex(proof.proof)}`,
-    publicInputsHex: proof.publicInputs.map((value: bigint) => `0x${value.toString(16)}`),
     salt,
   };
 }
@@ -209,21 +273,20 @@ export async function generateTallyUpdateProof(input: {
 
   const noirModule = await import("@noir-lang/noir_js");
   const noir = new noirModule.Noir(tallyCircuit);
-  // @ts-expect-error browser bundle path is intentionally deep-imported
   const backendModule = await import("../node_modules/@aztec/bb.js/dest/browser/index.js");
   const backend = new backendModule.UltraHonkBackend(tallyCircuit.bytecode, { threads: 1 });
   const { witness } = await noir.execute({
     direction: artifacts.direction.toString(),
     amount: input.amountInStroops.toString(),
     salt: input.salt,
-    yes_shares: yesShares.map((share) => share.toString()),
-    no_shares: noShares.map((share) => share.toString()),
-    share_salts: shareSalts,
     commitment: artifacts.commitmentHex,
     market_id: artifacts.marketField.toString(),
     collateral_amount: input.amountInStroops.toString(),
     previous_tally_commitment: input.previousTallyCommitment,
     next_tally_commitment: padHex32(BigInt(nextTallyCommitment)),
+    yes_shares: yesShares.map((share) => share.toString()),
+    no_shares: noShares.map((share) => share.toString()),
+    share_salts: shareSalts,
     share_commitment_root: padHex32(shareCommitmentRoot),
   });
   const proof = await backend.generateProof(witness, proofOptions);
@@ -233,7 +296,7 @@ export async function generateTallyUpdateProof(input: {
     commitment: artifacts.commitmentHex,
     nextTallyCommitment: padHex32(BigInt(nextTallyCommitment)),
     shareCommitmentRoot: padHex32(shareCommitmentRoot),
-    tallySharePackets: yesShares.map((yesShare, index) => ({
+    sharePackets: yesShares.map((yesShare, index) => ({
       marketId: input.marketId,
       commitment: artifacts.commitmentHex,
       shardIndex: index + 1,
@@ -243,7 +306,7 @@ export async function generateTallyUpdateProof(input: {
       shareCommitment: shareCommitments[index],
     })),
     proofHex: `0x${bytesToHex(proof.proof)}`,
-    publicInputsHex: proof.publicInputs.map((value: bigint) => `0x${value.toString(16)}`),
+    publicInputsHex: proof.publicInputs.map((value) => `0x${BigInt(value).toString(16)}`),
   };
 }
 
@@ -288,7 +351,6 @@ export async function generateTallyFinalizeProof(input: {
 
   const noirModule = await import("@noir-lang/noir_js");
   const noir = new noirModule.Noir(tallyCircuit);
-  // @ts-expect-error browser bundle path is intentionally deep-imported
   const backendModule = await import("../node_modules/@aztec/bb.js/dest/browser/index.js");
   const backend = new backendModule.UltraHonkBackend(tallyCircuit.bytecode, { threads: 1 });
   const { witness } = await noir.execute({
@@ -306,7 +368,7 @@ export async function generateTallyFinalizeProof(input: {
 
   return {
     proofHex: `0x${bytesToHex(proof.proof)}`,
-    publicInputsHex: proof.publicInputs.map((value: bigint) => `0x${value.toString(16)}`),
+    publicInputsHex: proof.publicInputs.map((value) => `0x${BigInt(value).toString(16)}`),
   };
 }
 
@@ -341,7 +403,6 @@ export async function generateClaimProof(input: {
   const payout = (input.amountInStroops * input.distributablePot) / input.winningSideTotal;
   const noirModule = await import("@noir-lang/noir_js");
   const noir = new noirModule.Noir(claimCircuit);
-  // @ts-expect-error browser bundle path is intentionally deep-imported
   const backendModule = await import("../node_modules/@aztec/bb.js/dest/browser/index.js");
   const backend = new backendModule.UltraHonkBackend(claimCircuit.bytecode, { threads: 1 });
   const { witness } = await noir.execute({
@@ -364,55 +425,84 @@ export async function generateClaimProof(input: {
     nullifier: artifacts.nullifierHex,
     payout,
     proofHex: `0x${bytesToHex(proof.proof)}`,
-    publicInputsHex: proof.publicInputs.map((value: bigint) => `0x${value.toString(16)}`),
   };
 }
 
 export async function generateReputationProof(input: {
   subjectId: string;
   category: string;
-  windowDays: 30 | 90 | 180;
-  descriptor: Record<string, unknown>;
-  records: Array<Record<string, unknown>>;
+  windowDays: ReputationWindowDays;
+  attestedRecords: AttestedReputationRecord[];
+  attestorKeyId: string;
+  onProgress?: (message: string) => void;
+  descriptor:
+    | { claimType: "percentile"; band: 10 | 25 | 50 }
+    | { claimType: "threshold"; metric: "roi" | "profit" | "winRate" | "participation" | "exposure"; threshold: string | number | bigint };
+  records: ReputationRecordInput[];
 }) {
+  input.onProgress?.("Loading reputation circuit...");
   reputationCircuitPromise = loadCircuit("/circuits/reputation.json", reputationCircuitPromise);
   const reputationCircuit = await reputationCircuitPromise;
-  const baseSnapshot = buildSnapshot(input.records, {
+  input.onProgress?.("Building attested snapshot...");
+  const snapshot = buildSnapshot(input.records, {
     category: input.category,
     subjectId: input.subjectId,
     windowDays: input.windowDays,
+    attestedRecords: input.attestedRecords,
   });
   const claim = createClaimDescriptor(input.descriptor);
-  const { poseidon2Permutation } = await ensurePoseidon();
-  const [snapshotCommitment] = await poseidon2Permutation([
-    stringSubjectToField(baseSnapshot.subjectId),
-    categoryCodeForField(baseSnapshot.category),
-    windowDaysToField(baseSnapshot.windowDays),
-    baseSnapshot.witnessSecret,
-  ]);
-  const snapshot = snapshotWithCircuitCommitment(baseSnapshot, snapshotCommitment);
   const metric = computeClaimMetric(snapshot, claim);
+  const includedRecords = snapshot.records.slice(0, merkleLeafCount());
+  const paddedRecords = Array.from({ length: merkleLeafCount() }, (_, index) => includedRecords[index] ?? null);
+  input.onProgress?.("Preparing Merkle witnesses...");
+  const siblingPaths = paddedRecords.map((record) => {
+    if (!record?.recordCommitment) {
+      return Array.from({ length: merkleDepth() }, () => "0");
+    }
+    const leafIndex = snapshot.sortedCommitments.findIndex((value) => value === record.recordCommitment);
+    const proof = leafIndex >= 0 ? buildMerkleProof(snapshot.merkleTree, leafIndex) : [];
+    return Array.from({ length: merkleDepth() }, (_, proofIndex) => (proof[proofIndex] ?? 0n).toString());
+  });
+  const leafIndices = paddedRecords.map((record) => {
+    if (!record?.recordCommitment) {
+      return "0";
+    }
+    const leafIndex = snapshot.sortedCommitments.findIndex((value) => value === record.recordCommitment);
+    return String(Math.max(0, leafIndex));
+  });
 
+  input.onProgress?.("Preparing prover...");
   const noirModule = await import("@noir-lang/noir_js");
   const noir = new noirModule.Noir(reputationCircuit);
-  // @ts-expect-error browser bundle path is intentionally deep-imported
   const backendModule = await import("../node_modules/@aztec/bb.js/dest/browser/index.js");
   const backend = new backendModule.UltraHonkBackend(reputationCircuit.bytecode, { threads: 1 });
+  input.onProgress?.("Computing private witness...");
   const { witness } = await noir.execute({
     claim_type: claimTypeCode(claim).toString(),
-    category_code: categoryCodeForField(snapshot.category).toString(),
+    category_code: stringSubjectToField(snapshot.category).toString(),
     window_days: windowDaysToField(snapshot.windowDays).toString(),
     threshold_or_band: metric.publicThreshold.toString(),
     subject: stringSubjectToField(snapshot.subjectId).toString(),
-    snapshot_commitment: snapshot.snapshotCommitment.toString(),
+    snapshot_root: snapshot.snapshotRoot.toString(),
+    market_ids: paddedRecords.map((record) => record ? marketIdToField(record.marketId).toString() : "0"),
+    amounts: paddedRecords.map((record) => (record?.amountInStroops ?? 0n).toString()),
+    payouts: paddedRecords.map((record) => (record?.payoutInStroops ?? 0n).toString()),
+    won_bits: paddedRecords.map((record) => (record?.won ? 1n : 0n).toString()),
+    claimed_at: paddedRecords.map((record) => BigInt(record?.claimedAt ?? 0).toString()),
+    record_salts: paddedRecords.map((record) => (record?.witnessSalt ?? 0n).toString()),
+    included: paddedRecords.map((record) => (record ? "1" : "0")),
+    record_commitments: paddedRecords.map((record) => (record?.recordCommitment ?? 0n).toString()),
+    merkle_siblings: siblingPaths,
+    leaf_indices: leafIndices,
     metric_value: metric.privateMetric.toString(),
     eligible_count: metric.eligibleCount.toString(),
-    witness_secret: snapshot.witnessSecret.toString(),
     peer_scores: metric.peerScores.map((value: bigint) => value.toString()),
     peer_eligible: metric.peerEligible.map((value: bigint) => value.toString()),
   });
+  input.onProgress?.("Generating zero-knowledge proof...");
   const proof = await backend.generateProof(witness, proofOptions);
   await backend.destroy?.();
+  input.onProgress?.("Packaging portable credential...");
 
   return serializeReputationProof({
     claim,
@@ -421,20 +511,23 @@ export async function generateReputationProof(input: {
     envelope: {
       proofHex: `0x${bytesToHex(proof.proof)}`,
       publicInputsHex: buildReputationPublicInputs(snapshot, claim, metric).map((value) => `0x${value.toString(16)}`),
+      attestorKeyId: input.attestorKeyId,
     },
   });
 }
 
-export async function verifyReputationProof(serialized: string) {
+export async function verifyReputationProof(serialized: string, attestedRecords: AttestedReputationRecord[] = []) {
   const parsed = verifyPortableReputationClaim(serialized);
   reputationCircuitPromise = loadCircuit("/circuits/reputation.json", reputationCircuitPromise);
   const reputationCircuit = await reputationCircuitPromise;
-  // @ts-expect-error browser bundle path is intentionally deep-imported
   const backendModule = await import("../node_modules/@aztec/bb.js/dest/browser/index.js");
   const backend = new backendModule.UltraHonkBackend(reputationCircuit.bytecode, { threads: 1 });
-  const isValid = await backend.verifyProof(envelopeToProofData(parsed.envelope), proofOptions);
+  const proofValid = await backend.verifyProof(envelopeToProofData(parsed.envelope), proofOptions);
   await backend.destroy?.();
-  return { isValid, portableClaim: parsed };
+  const snapshotVerified = attestedRecords.length > 0
+    && attestedRecords.every((record) => (
+      record.attestorKeyId === parsed.publicClaim.attestorKeyId
+      && verifyAttestedRecordSignature(record)
+    ));
+  return { proofValid, snapshotVerified, isValid: proofValid && snapshotVerified, portableClaim: parsed };
 }
-
-export { marketIdToField };

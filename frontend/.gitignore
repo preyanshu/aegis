@@ -19,6 +19,16 @@
 
 # production
 /build
+/dist
+*.tgz
+
+# testing
+*.lcov
+
+# logs
+logs
+_.log
+report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # misc
 .DS_Store
@@ -39,3 +49,10 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# caches
+.eslintcache
+.cache
+
+# IntelliJ based IDEs
+.idea

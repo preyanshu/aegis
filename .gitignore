@@ -4,6 +4,7 @@ npm-debug.log*
 .env
 bet-*.json
 tmp_*.hex
+frontend_backup_20260702/
 
 circuits/*/target/
 contracts/*/target/

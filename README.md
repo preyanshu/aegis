@@ -1,8 +1,8 @@
-# BlindMarket
+# Aegis
 
-Private prediction market backend on Stellar with Noir commitments, Soroban settlement, and portable offchain reputation proofs.
+Aegis is a private prediction market stack on Stellar with Noir commitments, Soroban settlement, and portable offchain reputation proofs.
 
-BlindMarket hides individual positions and pool splits while a market is open. Users commit to a side and collateral amount with a market-bound Poseidon2 commitment, markets resolve to a winner plus winner-side aggregate only, and winners claim proportional payouts with nullifier-protected proofs. Settled claimed history can also be converted into portable category/window reputation credentials such as percentile-band claims.
+Aegis hides individual positions and pool splits while a market is open. Users commit to a side and collateral amount with a market-bound Poseidon2 commitment, markets resolve to a winner plus winner-side aggregate only, and winners claim proportional payouts with nullifier-protected proofs. Settled claimed history can also be converted into portable category/window reputation credentials such as percentile-band claims.
 
 ## Status
 
