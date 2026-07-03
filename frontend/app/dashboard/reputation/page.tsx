@@ -10,6 +10,7 @@ import { ChevronDown, Copy, HelpCircle, Loader2, MoreVertical, Share2, ShieldChe
 import { usePrivy } from "@privy-io/react-auth";
 import { Navbar } from "@/components/landing/Navbar";
 import { PublicProfileSettingsModal } from "@/components/profile/PublicProfileSettingsModal";
+import { useReputationSnapshotContext } from "@/components/profile/ReputationSnapshotContext";
 import { mapMarketSummary, payoutForPosition, formatUsdc } from "@/lib/blind-market";
 import { DEFAULT_PROFILE_AVATAR } from "@/lib/profile-avatar";
 import { computeRecordCommitment, generateReputationProof, verifyReputationProof } from "@/lib/proofs";
@@ -29,13 +30,13 @@ import { getPrivyStellarWallet, loadMarketIds, loadMarketView, type MarketView }
 import { type BlindPositionRecord } from "@/lib/types";
 import {
   attestClaimRecord,
-  loadReputationSnapshot,
   markClaimedPosition,
   archiveAchievement,
   removeAchievement,
   replaceAchievements,
   upsertAchievement,
   upsertAttestedRecord,
+  type ReputationSnapshot,
   type ReputationSyncMode,
   type StoredReputationCredential,
 } from "@/lib/reputation-vault";
@@ -1973,6 +1974,7 @@ function ReputationModal({
 
 export default function ReputationPage() {
   const { user } = usePrivy();
+  const { snapshot: contextSnapshot, getSnapshot } = useReputationSnapshotContext();
   const [rows, setRows] = useState<StellarMarketRow[]>([]);
   const [savedPositions, setSavedPositions] = useState<BlindPositionRecord[]>([]);
   const [attestedRecords, setAttestedRecords] = useState<AttestedReputationRecord[]>([]);
@@ -2018,6 +2020,17 @@ export default function ReputationPage() {
     email?: string;
   } | undefined;
 
+  function applyReputationSnapshot(snapshot: ReputationSnapshot) {
+    setSavedPositions(snapshot.positions);
+    setAttestedRecords(snapshot.attestedRecords);
+    setPrivateWitnesses(snapshot.privateReputationWitnesses);
+    setAchievements(normalizeAchievementDisplayOrder(snapshot.achievements as AchievementCard[]));
+    setProfileName(snapshot.profile.displayName || "Public trader");
+    setProfileBio(snapshot.profile.bio || "No public market bio yet. Start participating to build a visible reputation trail.");
+    setProfileAvatar(snapshot.profile.avatarDataUrl || DEFAULT_PROFILE_AVATAR);
+    setSyncMode(snapshot.syncMode);
+  }
+
   useEffect(() => {
     if (!walletAddress) {
       setProfileName(googleProfile?.name ?? user?.email?.address?.split("@")[0] ?? "Public trader");
@@ -2034,7 +2047,7 @@ export default function ReputationPage() {
     let mounted = true;
     const run = async () => {
       try {
-        const snapshot = await loadReputationSnapshot(walletAddress, {
+        const snapshot = contextSnapshot ?? await getSnapshot({
           displayName: googleProfile?.name ?? user?.email?.address?.split("@")[0] ?? "Public trader",
           bio: "No public market bio yet. Start participating to build a visible reputation trail.",
           avatarDataUrl: googleProfile?.picture ?? DEFAULT_PROFILE_AVATAR,
@@ -2044,14 +2057,7 @@ export default function ReputationPage() {
           return;
         }
 
-        setSavedPositions(snapshot.positions);
-        setAttestedRecords(snapshot.attestedRecords);
-        setPrivateWitnesses(snapshot.privateReputationWitnesses);
-        setAchievements(normalizeAchievementDisplayOrder(snapshot.achievements as AchievementCard[]));
-        setProfileName(snapshot.profile.displayName || "Public trader");
-        setProfileBio(snapshot.profile.bio || "No public market bio yet. Start participating to build a visible reputation trail.");
-        setProfileAvatar(snapshot.profile.avatarDataUrl || DEFAULT_PROFILE_AVATAR);
-        setSyncMode(snapshot.syncMode);
+        applyReputationSnapshot(snapshot);
       } catch (error) {
         console.error("Failed to load reputation snapshot:", error);
       }
@@ -2062,7 +2068,7 @@ export default function ReputationPage() {
     return () => {
       mounted = false;
     };
-  }, [user, walletAddress]);
+  }, [contextSnapshot, getSnapshot, user, walletAddress]);
 
   useEffect(() => {
     let mounted = true;

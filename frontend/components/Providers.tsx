@@ -9,7 +9,7 @@ import { ensurePrivyStellarWallet, isPrivyStellarWalletLimitError } from "@/lib/
 import { getPrivyStellarWallet } from "@/lib/stellar";
 import { PublicProfileOnboardingModal } from "@/components/profile/PublicProfileOnboardingModal";
 import { PublicProfileSettingsModal } from "@/components/profile/PublicProfileSettingsModal";
-import { loadExistingReputationSnapshot } from "@/lib/reputation-vault";
+import { ReputationSnapshotProvider, useReputationSnapshotContext } from "@/components/profile/ReputationSnapshotContext";
 
 function installBigIntBufferPolyfill() {
     type BigIntBufferMethods = {
@@ -100,35 +100,20 @@ function PrivyStellarProvisioner({ children }: { children: React.ReactNode }) {
 function PublicProfileGate({ children }: { children: React.ReactNode }) {
     const { authenticated, user } = usePrivy();
     const stellarWallet = getPrivyStellarWallet(user);
+    const { snapshot, isLoading, hasLoaded } = useReputationSnapshotContext();
     const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
     useEffect(() => {
         if (!authenticated || !stellarWallet?.address) {
+            setIsOnboardingOpen(false);
             return;
         }
 
-        let mounted = true;
-
-        const run = async () => {
-            try {
-                const profile = await loadExistingReputationSnapshot(stellarWallet.address);
-                if (mounted) {
-                    setIsOnboardingOpen(!profile || !profile.profile.displayName.trim() || !profile.profile.bio.trim());
-                }
-            } catch {
-                if (mounted) {
-                    setIsOnboardingOpen(true);
-                }
-            }
-        };
-
-        void run();
-
-        return () => {
-            mounted = false;
-        };
-    }, [authenticated, stellarWallet?.address]);
+        if (hasLoaded && !isLoading) {
+            setIsOnboardingOpen(!snapshot || !snapshot.profile.displayName.trim() || !snapshot.profile.bio.trim());
+        }
+    }, [authenticated, hasLoaded, isLoading, snapshot, stellarWallet?.address]);
 
     useEffect(() => {
         const openProfileSettings = () => setIsSettingsOpen(true);
@@ -146,6 +131,7 @@ function PublicProfileGate({ children }: { children: React.ReactNode }) {
             <PublicProfileOnboardingModal
                 isOpen={authenticated && Boolean(stellarWallet?.address) && isOnboardingOpen}
                 onOpenChange={setIsOnboardingOpen}
+                canDismiss={false}
             />
             <PublicProfileSettingsModal
                 isOpen={authenticated && Boolean(stellarWallet?.address) && isSettingsOpen}
@@ -172,7 +158,9 @@ export default function Providers({ children }: { children: React.ReactNode }) {
             }}
         >
             <PrivyStellarProvisioner>
-                <PublicProfileGate>{children}</PublicProfileGate>
+                <ReputationSnapshotProvider>
+                    <PublicProfileGate>{children}</PublicProfileGate>
+                </ReputationSnapshotProvider>
             </PrivyStellarProvisioner>
         </PrivyProvider>
     );

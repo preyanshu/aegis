@@ -7,11 +7,9 @@ import { Check, Cloud, Loader2, Lock, Upload, X } from "lucide-react";
 import { usePrivy } from "@privy-io/react-auth";
 import { DEFAULT_PROFILE_AVATAR } from "@/lib/profile-avatar";
 import { getPrivyStellarWallet } from "@/lib/stellar";
+import { useReputationSnapshotContext } from "@/components/profile/ReputationSnapshotContext";
 import {
   loadExistingReputationSnapshot,
-  loadLocalReputationSnapshot,
-  loadReputationSnapshot,
-  saveReputationSnapshot,
   type ReputationSyncMode,
 } from "@/lib/reputation-vault";
 
@@ -22,6 +20,12 @@ type PublicProfileSettingsModalProps = {
 
 export function PublicProfileSettingsModal({ isOpen, onOpenChange }: PublicProfileSettingsModalProps) {
   const { user } = usePrivy();
+  const {
+    snapshot: contextSnapshot,
+    getSnapshot,
+    saveSnapshot,
+    setSyncMode: setContextSyncMode,
+  } = useReputationSnapshotContext();
   const walletAddress = getPrivyStellarWallet(user)?.address ?? "";
   const googleProfile = user?.google as {
     name?: string;
@@ -45,6 +49,29 @@ export function PublicProfileSettingsModal({ isOpen, onOpenChange }: PublicProfi
   const [status, setStatus] = useState("");
   const [statusTone, setStatusTone] = useState<"success" | "error">("success");
 
+  function applySnapshot(snapshot: NonNullable<typeof contextSnapshot>) {
+    setDisplayName(snapshot.profile.displayName || defaultName);
+    setAvatarDataUrl(snapshot.profile.avatarDataUrl || defaultAvatar || "");
+    setBio(snapshot.profile.bio || defaultBio);
+    setSyncMode(snapshot.syncMode);
+  }
+
+  function handleSyncModeChange(nextMode: ReputationSyncMode) {
+    setSyncMode(nextMode);
+    if (!walletAddress) {
+      return;
+    }
+
+    const snapshot = setContextSyncMode(nextMode, {
+      displayName: displayName.trim() || defaultName,
+      bio: bio.trim() || defaultBio,
+      avatarDataUrl: avatarDataUrl || defaultAvatar || null,
+    });
+    if (snapshot) {
+      applySnapshot(snapshot);
+    }
+  }
+
   useEffect(() => {
     if (!isOpen) {
       return;
@@ -64,13 +91,17 @@ export function PublicProfileSettingsModal({ isOpen, onOpenChange }: PublicProfi
     const run = async () => {
       try {
         setIsPrefilling(true);
-        const existing = await loadExistingReputationSnapshot(walletAddress);
+        const existing = contextSnapshot ?? await loadExistingReputationSnapshot(walletAddress);
         if (!mounted) return;
 
-        setDisplayName(existing?.profile.displayName || defaultName);
-        setAvatarDataUrl(existing?.profile.avatarDataUrl || defaultAvatar || "");
-        setBio(existing?.profile.bio || defaultBio);
-        setSyncMode(existing?.syncMode ?? "server");
+        if (existing) {
+          applySnapshot(existing);
+        } else {
+          setDisplayName(defaultName);
+          setAvatarDataUrl(defaultAvatar || "");
+          setBio(defaultBio);
+          setSyncMode("server");
+        }
       } catch {
         if (!mounted) return;
         setDisplayName(defaultName);
@@ -89,7 +120,7 @@ export function PublicProfileSettingsModal({ isOpen, onOpenChange }: PublicProfi
     return () => {
       mounted = false;
     };
-  }, [defaultAvatar, defaultBio, defaultName, isOpen, walletAddress]);
+  }, [contextSnapshot, defaultAvatar, defaultBio, defaultName, isOpen, walletAddress]);
 
   async function handleAvatarChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -133,28 +164,13 @@ export function PublicProfileSettingsModal({ isOpen, onOpenChange }: PublicProfi
 
     try {
       const saveStartedAt = Date.now();
-      const current = syncMode === "local"
-        ? loadLocalReputationSnapshot(walletAddress) ?? {
-            walletAddress,
-            syncMode: "local" as const,
-            profile: {
-              displayName: "",
-              bio: "",
-              avatarDataUrl: null,
-            },
-            positions: [],
-            attestedRecords: [],
-            privateReputationWitnesses: [],
-            achievements: [],
-            updatedAt: Date.now(),
-          }
-        : await loadReputationSnapshot(walletAddress, {
-            displayName: defaultName,
-            bio: defaultBio,
-            avatarDataUrl: defaultAvatar || null,
-          });
+      const current = contextSnapshot ?? await getSnapshot({
+        displayName: defaultName,
+        bio: defaultBio,
+        avatarDataUrl: defaultAvatar || null,
+      });
 
-      await saveReputationSnapshot({
+      const saved = await saveSnapshot({
         ...current,
         walletAddress,
         syncMode,
@@ -164,6 +180,7 @@ export function PublicProfileSettingsModal({ isOpen, onOpenChange }: PublicProfi
           avatarDataUrl: avatarDataUrl || defaultAvatar || null,
         },
       });
+      applySnapshot(saved);
 
       const elapsed = Date.now() - saveStartedAt;
       if (elapsed < 350) {
@@ -227,7 +244,7 @@ export function PublicProfileSettingsModal({ isOpen, onOpenChange }: PublicProfi
                 <div className="grid gap-3 sm:grid-cols-2">
                   <button
                     type="button"
-                    onClick={() => setSyncMode("server")}
+                    onClick={() => handleSyncModeChange("server")}
                     className={`rounded-[14px] border p-4 text-left transition ${
                       syncMode === "server"
                         ? "border-white/30 bg-white/[0.06]"
@@ -250,7 +267,7 @@ export function PublicProfileSettingsModal({ isOpen, onOpenChange }: PublicProfi
 
                   <button
                     type="button"
-                    onClick={() => setSyncMode("local")}
+                    onClick={() => handleSyncModeChange("local")}
                     className={`rounded-[14px] border p-4 text-left transition ${
                       syncMode === "local"
                         ? "border-white/30 bg-white/[0.06]"

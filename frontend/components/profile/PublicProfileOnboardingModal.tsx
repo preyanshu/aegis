@@ -7,17 +7,16 @@ import { ArrowLeft, ArrowRight, Check, Cloud, Loader2, Lock, Upload, X } from "l
 import { usePrivy } from "@privy-io/react-auth";
 import { DEFAULT_PROFILE_AVATAR } from "@/lib/profile-avatar";
 import { getPrivyStellarWallet } from "@/lib/stellar";
+import { useReputationSnapshotContext } from "@/components/profile/ReputationSnapshotContext";
 import {
   loadExistingReputationSnapshot,
-  loadLocalReputationSnapshot,
-  loadReputationSnapshot,
-  saveReputationSnapshot,
   type ReputationSyncMode,
 } from "@/lib/reputation-vault";
 
 type PublicProfileOnboardingModalProps = {
   isOpen: boolean;
   onOpenChange: (next: boolean) => void;
+  canDismiss?: boolean;
 };
 
 const STEPS = [
@@ -26,8 +25,18 @@ const STEPS = [
   { id: "review", label: "Review" },
 ] as const;
 
-export function PublicProfileOnboardingModal({ isOpen, onOpenChange }: PublicProfileOnboardingModalProps) {
+export function PublicProfileOnboardingModal({
+  isOpen,
+  onOpenChange,
+  canDismiss = true,
+}: PublicProfileOnboardingModalProps) {
   const { user } = usePrivy();
+  const {
+    snapshot: contextSnapshot,
+    getSnapshot,
+    saveSnapshot,
+    setSyncMode: setContextSyncMode,
+  } = useReputationSnapshotContext();
   const walletAddress = getPrivyStellarWallet(user)?.address ?? "";
   const googleProfile = user?.google as {
     name?: string;
@@ -51,6 +60,29 @@ export function PublicProfileOnboardingModal({ isOpen, onOpenChange }: PublicPro
   const [isSaving, setIsSaving] = useState(false);
   const [status, setStatus] = useState("");
   const [statusTone, setStatusTone] = useState<"success" | "error">("success");
+
+  function applySnapshot(snapshot: NonNullable<typeof contextSnapshot>) {
+    setDisplayName(snapshot.profile.displayName || defaultName);
+    setAvatarDataUrl(snapshot.profile.avatarDataUrl || defaultAvatar || "");
+    setBio(snapshot.profile.bio || defaultBio);
+    setSyncMode(snapshot.syncMode);
+  }
+
+  function handleSyncModeChange(nextMode: ReputationSyncMode) {
+    setSyncMode(nextMode);
+    if (!walletAddress) {
+      return;
+    }
+
+    const snapshot = setContextSyncMode(nextMode, {
+      displayName: displayName.trim() || defaultName,
+      bio: bio.trim() || defaultBio,
+      avatarDataUrl: avatarDataUrl || defaultAvatar || null,
+    });
+    if (snapshot) {
+      applySnapshot(snapshot);
+    }
+  }
 
   useEffect(() => {
     setDisplayName(defaultName);
@@ -76,16 +108,13 @@ export function PublicProfileOnboardingModal({ isOpen, onOpenChange }: PublicPro
     const run = async () => {
       try {
         setIsPrefilling(true);
-        const existing = await loadExistingReputationSnapshot(walletAddress);
+        const existing = contextSnapshot ?? await loadExistingReputationSnapshot(walletAddress);
 
         if (!mounted || !existing) {
           return;
         }
 
-        setDisplayName(existing.profile.displayName || defaultName);
-        setAvatarDataUrl(existing.profile.avatarDataUrl || defaultAvatar || "");
-        setBio(existing.profile.bio || defaultBio);
-        setSyncMode(existing.syncMode);
+        applySnapshot(existing);
       } catch {
         // The user can still continue with defaults.
       } finally {
@@ -100,7 +129,7 @@ export function PublicProfileOnboardingModal({ isOpen, onOpenChange }: PublicPro
     return () => {
       mounted = false;
     };
-  }, [defaultAvatar, defaultBio, defaultName, isOpen, walletAddress]);
+  }, [contextSnapshot, defaultAvatar, defaultBio, defaultName, isOpen, walletAddress]);
 
   async function handleAvatarChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -142,6 +171,12 @@ export function PublicProfileOnboardingModal({ isOpen, onOpenChange }: PublicPro
     setCurrentStep((value) => Math.max(value - 1, 0));
   }
 
+  function handleDismiss() {
+    if (canDismiss) {
+      onOpenChange(false);
+    }
+  }
+
   async function handleSave(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!walletAddress) {
@@ -161,28 +196,13 @@ export function PublicProfileOnboardingModal({ isOpen, onOpenChange }: PublicPro
     setStatusTone("success");
     try {
       const saveStartedAt = Date.now();
-      const current = syncMode === "local"
-        ? loadLocalReputationSnapshot(walletAddress) ?? {
-            walletAddress,
-            syncMode: "local" as const,
-            profile: {
-              displayName: "",
-              bio: "",
-              avatarDataUrl: null,
-            },
-            positions: [],
-            attestedRecords: [],
-            privateReputationWitnesses: [],
-            achievements: [],
-            updatedAt: Date.now(),
-          }
-        : await loadReputationSnapshot(walletAddress, {
-            displayName: defaultName,
-            bio: defaultBio,
-            avatarDataUrl: defaultAvatar || null,
-          });
+      const current = contextSnapshot ?? await getSnapshot({
+        displayName: defaultName,
+        bio: defaultBio,
+        avatarDataUrl: defaultAvatar || null,
+      });
 
-      await saveReputationSnapshot({
+      const saved = await saveSnapshot({
         ...current,
         walletAddress,
         syncMode,
@@ -192,6 +212,7 @@ export function PublicProfileOnboardingModal({ isOpen, onOpenChange }: PublicPro
           avatarDataUrl: avatarDataUrl || defaultAvatar || null,
         },
       });
+      applySnapshot(saved);
 
       const elapsed = Date.now() - saveStartedAt;
       if (elapsed < 350) {
@@ -216,7 +237,7 @@ export function PublicProfileOnboardingModal({ isOpen, onOpenChange }: PublicPro
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            onClick={() => onOpenChange(false)}
+            onClick={handleDismiss}
             className="absolute inset-0 bg-black/75 backdrop-blur-xl"
           />
 
@@ -238,13 +259,15 @@ export function PublicProfileOnboardingModal({ isOpen, onOpenChange }: PublicPro
                   Choose how your vault is stored, then finish the public identity people will see on Aegis.
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => onOpenChange(false)}
-                className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/[0.03] text-white/55 transition hover:bg-white/[0.06] hover:text-white"
-              >
-                <X className="h-4 w-4" />
-              </button>
+              {canDismiss ? (
+                <button
+                  type="button"
+                  onClick={handleDismiss}
+                  className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/[0.03] text-white/55 transition hover:bg-white/[0.06] hover:text-white"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              ) : null}
             </div>
 
             <form onSubmit={handleSave} className="px-5 pb-5 sm:px-6 sm:pb-6">
@@ -286,7 +309,7 @@ export function PublicProfileOnboardingModal({ isOpen, onOpenChange }: PublicPro
                     <div className="grid gap-3 sm:grid-cols-2">
                       <button
                         type="button"
-                        onClick={() => setSyncMode("server")}
+                        onClick={() => handleSyncModeChange("server")}
                         className={`rounded-[14px] border p-4 text-left transition ${
                           syncMode === "server"
                             ? "border-white/30 bg-white/[0.06]"
@@ -316,7 +339,7 @@ export function PublicProfileOnboardingModal({ isOpen, onOpenChange }: PublicPro
 
                       <button
                         type="button"
-                        onClick={() => setSyncMode("local")}
+                        onClick={() => handleSyncModeChange("local")}
                         className={`rounded-[14px] border p-4 text-left transition ${
                           syncMode === "local"
                             ? "border-white/30 bg-white/[0.06]"

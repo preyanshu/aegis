@@ -256,7 +256,9 @@ function readLocalSnapshot(walletAddress: string): ReputationSnapshot | null {
     if (!parsed.profile) {
       parsed.profile = emptySnapshot(walletAddress, "local").profile;
     }
-    parsed.syncMode = "local";
+    const storedMode = readStoredSyncMode(walletAddress);
+    parsed.syncMode = storedMode
+      ?? (parsed.syncMode === "server" || parsed.syncMode === "local" ? parsed.syncMode : "local");
     return parsed;
   } catch {
     const legacyPositions = loadSavedPositions().filter((position) => position.owner.toLowerCase() === walletAddress.toLowerCase());
@@ -281,6 +283,17 @@ function writeLocalSnapshot(snapshot: ReputationSnapshot) {
     typeof value === "bigint" ? value.toString() : value
   ), 2));
   writeStoredSyncMode(snapshot.walletAddress, "local");
+}
+
+function writeCachedSnapshot(snapshot: ReputationSnapshot) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(localSnapshotKey(snapshot.walletAddress), JSON.stringify(snapshot, (_key, value) => (
+    typeof value === "bigint" ? value.toString() : value
+  ), 2));
+  writeStoredSyncMode(snapshot.walletAddress, snapshot.syncMode);
 }
 
 async function readServerSnapshot(walletAddress: string): Promise<ReputationSnapshot | null> {
@@ -445,14 +458,12 @@ export async function loadReputationSnapshot(walletAddress: string, defaults?: P
 
 export async function loadExistingReputationSnapshot(walletAddress: string): Promise<ReputationSnapshot | null> {
   const storedMode = readStoredSyncMode(walletAddress) ?? "server";
-
-  if (storedMode === "local") {
-    const localSnapshot = readLocalSnapshot(walletAddress);
-    return localSnapshot ? normalizeSnapshot(localSnapshot, "local") : null;
-  }
-
   const localSnapshot = readLocalSnapshot(walletAddress);
   const serverSnapshot = await readServerSnapshot(walletAddress).catch(() => null);
+
+  if (storedMode === "local") {
+    return localSnapshot ? normalizeSnapshot(localSnapshot, "local") : null;
+  }
 
   if (serverSnapshot && localSnapshot) {
     return mergeSnapshots(serverSnapshot, localSnapshot);
@@ -491,16 +502,7 @@ export async function saveReputationSnapshot(snapshot: ReputationSnapshot) {
   });
   await upsertReputationVault(nextSnapshot);
 
-  if (typeof window !== "undefined") {
-    writeStoredSyncMode(nextSnapshot.walletAddress, "server");
-    window.localStorage.setItem(
-      localSnapshotKey(nextSnapshot.walletAddress),
-      JSON.stringify({
-        ...nextSnapshot,
-        syncMode: "local",
-      }, null, 2),
-    );
-  }
+  writeCachedSnapshot(nextSnapshot);
 
   return nextSnapshot;
 }
@@ -659,4 +661,40 @@ export function getReputationSyncMode(walletAddress: string) {
 
 export function loadLocalReputationSnapshot(walletAddress: string) {
   return readLocalSnapshot(walletAddress);
+}
+
+export function cacheReputationSyncMode(
+  walletAddress: string,
+  syncMode: ReputationSyncMode,
+  defaults?: Partial<ReputationProfileInput>,
+) {
+  const current = readLocalSnapshot(walletAddress) ?? emptySnapshot(walletAddress, syncMode);
+  const nextSnapshot = cloneSnapshot({
+    ...current,
+    syncMode,
+    profile: {
+      displayName: current.profile.displayName || "",
+      bio: current.profile.bio || "",
+      avatarDataUrl: current.profile.avatarDataUrl ?? defaults?.avatarDataUrl ?? null,
+    },
+    updatedAt: Date.now(),
+  });
+
+  writeCachedSnapshot(nextSnapshot);
+  return nextSnapshot;
+}
+
+export function cacheReputationSnapshot(snapshot: ReputationSnapshot) {
+  const nextSnapshot = cloneSnapshot({
+    ...snapshot,
+    updatedAt: snapshot.updatedAt ?? Date.now(),
+  });
+
+  if (nextSnapshot.syncMode === "local") {
+    writeLocalSnapshot(nextSnapshot);
+  } else {
+    writeCachedSnapshot(nextSnapshot);
+  }
+
+  return nextSnapshot;
 }
