@@ -6,10 +6,10 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Navbar } from "@/components/landing/Navbar";
 import { expectedPayoutForPosition, formatUsdc, mapMarketSummary, marketStatusLabel, payoutForPosition, positionStatusLabel } from "@/lib/blind-market";
 import type { BlindMarketSummary, BlindPositionRecord } from "@/lib/types";
-import { claimWinningsWithPrivyWallet, getPrivyStellarWallet, loadMarketIds, loadMarketView, submitPrivateTallyWithPrivyWallet, submitTallySharesToBackend, type MarketView } from "@/lib/stellar";
+import { claimWinningsWithPrivyWallet, getBrowserConfig, getPrivyStellarWallet, loadMarketIds, loadMarketView, submitPrivateTallyWithPrivyWallet, submitTallySharesToBackend, type MarketView } from "@/lib/stellar";
 import { usePrivy } from "@privy-io/react-auth";
 import { useCreateWallet, useSignRawHash } from "@privy-io/react-auth/extended-chains";
-import { AlertCircle, ChevronDown, FolderLock, Loader2, MoveRight, ShieldCheck, Trophy } from "lucide-react";
+import { AlertCircle, Check, ChevronDown, ExternalLink, FolderLock, Loader2, MoveRight, ShieldCheck, Trophy, X } from "lucide-react";
 import { attestClaimRecord, loadReputationSnapshot, markClaimedPosition, upsertAttestedRecord, upsertPrivateReputationWitness } from "@/lib/reputation-vault";
 import { computeRecordCommitment, generateClaimProof, generateTallyUpdateProof, randomWitnessSalt } from "@/lib/proofs";
 import { ensurePrivyStellarWallet, isPrivyStellarWalletLimitError } from "@/lib/privy-stellar-wallet";
@@ -29,6 +29,21 @@ type PositionGroup = {
   noCommitted: bigint;
 };
 
+type PreparedActionReview =
+  | {
+      kind: "tally";
+      group: PositionGroup;
+      positions: BlindPositionRecord[];
+      retryCount: number;
+      newCount: number;
+    }
+  | {
+      kind: "claim";
+      group: PositionGroup;
+      positions: BlindPositionRecord[];
+      totalPayout: bigint;
+    };
+
 function marketQuestion(group: PositionGroup) {
   return group.market?.question ?? group.positions[0]?.marketQuestion ?? "Unknown market";
 }
@@ -44,6 +59,11 @@ function isSubmittedOrQueued(position: BlindPositionRecord) {
     || Boolean(position.talliedAt);
 }
 
+function explorerTransactionUrl(hash: string) {
+  const networkSegment = getBrowserConfig().networkPassphrase.includes("Test") ? "testnet" : "public";
+  return `https://stellar.expert/explorer/${networkSegment}/tx/${hash}`;
+}
+
 export default function PositionsPage() {
   const { user, authenticated, login } = usePrivy();
   const { createWallet } = useCreateWallet();
@@ -55,6 +75,10 @@ export default function PositionsPage() {
   const [actionError, setActionError] = useState("");
   const [expandedMarketGroup, setExpandedMarketGroup] = useState<string | null>(null);
   const [expandedPositionDetails, setExpandedPositionDetails] = useState<string | null>(null);
+  const [isActionReviewOpen, setIsActionReviewOpen] = useState(false);
+  const [preparedAction, setPreparedAction] = useState<PreparedActionReview | null>(null);
+  const [actionTxHashes, setActionTxHashes] = useState<string[]>([]);
+  const [actionReviewError, setActionReviewError] = useState("");
   const [now, setNow] = useState(Date.now());
   const stellarWallet = getPrivyStellarWallet(user);
 
@@ -191,6 +215,59 @@ export default function PositionsPage() {
     ));
     setRows(nextRows);
   };
+
+  function resetActionReview() {
+    setIsActionReviewOpen(false);
+    setPreparedAction(null);
+    setActionTxHashes([]);
+    setActionReviewError("");
+  }
+
+  function openBatchTallyReview(group: PositionGroup) {
+    if (!authenticated) {
+      void login();
+      return;
+    }
+
+    const positions = [...retryableTallyPositionsForGroup(group), ...pendingTallyPositionsForGroup(group)];
+    if (positions.length === 0) {
+      return;
+    }
+
+    setActionReviewError("");
+    setActionTxHashes([]);
+    setPreparedAction({
+      kind: "tally",
+      group,
+      positions,
+      retryCount: retryableTallyPositionsForGroup(group).length,
+      newCount: pendingTallyPositionsForGroup(group).length,
+    });
+    setIsActionReviewOpen(true);
+  }
+
+  function openBatchClaimReview(group: PositionGroup) {
+    if (!authenticated) {
+      void login();
+      return;
+    }
+
+    const positions = claimablePositionsForGroup(group);
+    if (positions.length === 0) {
+      return;
+    }
+
+    const totalPayout = positions.reduce((sum, position) => sum + payoutForPosition(group.market!, BigInt(position.amountInStroops)), 0n);
+    setActionReviewError("");
+    setActionTxHashes([]);
+    setPreparedAction({
+      kind: "claim",
+      group,
+      positions,
+      totalPayout,
+    });
+    setIsActionReviewOpen(true);
+  }
 
   const walletPositions = useMemo(
     () => savedPositions.filter((position) => !walletAddress || position.owner === walletAddress),
@@ -340,7 +417,10 @@ export default function PositionsPage() {
         tallySharePackets: proof.sharePackets,
       });
 
-      return proof.nextTallyCommitment;
+      return {
+        nextTallyCommitment: proof.nextTallyCommitment,
+        txHash: tx.hash,
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (submittedTxHash) {
@@ -469,7 +549,7 @@ export default function PositionsPage() {
       console.error("Claim attestation failed:", attestationError);
     }
 
-    return proof.payout;
+    return tx.hash;
   }
 
   async function handleBatchTally(group: PositionGroup) {
@@ -490,15 +570,19 @@ export default function PositionsPage() {
       let liveView = await loadMarketView(group.marketId);
       let liveMarket = mapMarketSummary({ marketId: group.marketId, view: liveView });
       let previousTallyCommitment = liveMarket.tallyCommitment || `0x${"0".repeat(64)}`;
+      const txHashes: string[] = [];
 
       for (const position of positions) {
-        previousTallyCommitment = await submitTallyForPosition(group, position, previousTallyCommitment);
+        const result = await submitTallyForPosition(group, position, previousTallyCommitment);
+        previousTallyCommitment = result.nextTallyCommitment;
+        txHashes.push(result.txHash);
         completedCount += 1;
         liveView = await loadMarketView(group.marketId);
         liveMarket = mapMarketSummary({ marketId: group.marketId, view: liveView });
         previousTallyCommitment = liveMarket.tallyCommitment || previousTallyCommitment;
       }
 
+      setActionTxHashes(txHashes);
       await Promise.all([refreshMarkets(), refreshPositions()]);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -526,12 +610,15 @@ export default function PositionsPage() {
     setBusyAction(`claim:${group.marketId}`);
     setActionError("");
     let completedCount = 0;
+    const txHashes: string[] = [];
     try {
       for (const position of positions) {
-        await claimSinglePosition(group, position);
+        const txHash = await claimSinglePosition(group, position);
+        txHashes.push(txHash);
         completedCount += 1;
       }
 
+      setActionTxHashes(txHashes);
       await Promise.all([refreshMarkets(), refreshPositions()]);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -542,6 +629,24 @@ export default function PositionsPage() {
       );
     } finally {
       setBusyAction(null);
+    }
+  }
+
+  async function handleApproveActionReview() {
+    if (!preparedAction) {
+      return;
+    }
+
+    try {
+      if (preparedAction.kind === "tally") {
+        await handleBatchTally(preparedAction.group);
+      } else {
+        await handleBatchClaim(preparedAction.group);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setActionReviewError(message);
+      throw error;
     }
   }
 
@@ -724,7 +829,7 @@ export default function PositionsPage() {
                                     onClick={(event) => {
                                       event.preventDefault();
                                       event.stopPropagation();
-                                      void handleBatchTally(group);
+                                      openBatchTallyReview(group);
                                     }}
                                     disabled={busyAction === `tally:${group.marketId}`}
                                     className="inline-flex h-10 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-white px-4 text-[11px] font-black uppercase tracking-[0.18em] text-black transition-all hover:bg-white/90 disabled:opacity-60"
@@ -737,7 +842,7 @@ export default function PositionsPage() {
                                     onClick={(event) => {
                                       event.preventDefault();
                                       event.stopPropagation();
-                                      void handleBatchClaim(group);
+                                      openBatchClaimReview(group);
                                     }}
                                     disabled={busyAction === `claim:${group.marketId}`}
                                     className="inline-flex h-10 shrink-0 items-center justify-center rounded-xl border border-emerald-500/15 bg-emerald-500/10 px-4 text-[11px] font-black uppercase tracking-[0.18em] text-emerald-50 transition-all hover:bg-emerald-500/15 disabled:opacity-60"
@@ -895,6 +1000,156 @@ export default function PositionsPage() {
           </div>
         )}
       </main>
+
+      <AnimatePresence>
+        {isActionReviewOpen && preparedAction ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 px-4 py-4 backdrop-blur-md">
+            <motion.div
+              initial={{ opacity: 0, y: 12, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 12, scale: 0.98 }}
+              transition={{ duration: 0.22, ease: "easeOut" }}
+              className="relative max-h-[88vh] w-full max-w-[760px] overflow-y-auto rounded-[28px] border border-white/10 bg-[#0b0b0e] shadow-[0_32px_120px_rgba(0,0,0,0.55)]"
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  const actionBusy = preparedAction.kind === "tally"
+                    ? busyAction === `tally:${preparedAction.group.marketId}`
+                    : busyAction === `claim:${preparedAction.group.marketId}`;
+                  if (actionBusy) {
+                    return;
+                  }
+                  resetActionReview();
+                }}
+                className="absolute right-5 top-5 z-10 rounded-full border border-white/10 bg-white/[0.03] p-2 text-white/50 transition-colors hover:text-white"
+              >
+                <X className="h-4 w-4" />
+              </button>
+
+              <div className="space-y-4 p-4 sm:p-5">
+                {actionTxHashes.length > 0 ? (
+                  <div className="rounded-[24px] border border-emerald-500/20 bg-[linear-gradient(180deg,rgba(16,185,129,0.14),rgba(255,255,255,0.02))] p-6 sm:p-7">
+                    <div className="flex flex-col items-center text-center">
+                      <div className="flex h-16 w-16 items-center justify-center rounded-full border border-emerald-400/30 bg-emerald-500/12 shadow-[0_0_40px_rgba(16,185,129,0.16)]">
+                        <Check className="h-8 w-8 text-emerald-300" />
+                      </div>
+                      <p className="mt-5 text-[10px] font-black uppercase tracking-[0.22em] text-emerald-300/70">Transaction Confirmed</p>
+                      <h4 className="mt-2 text-xl font-black tracking-tight text-white">
+                        {preparedAction.kind === "tally" ? "Tally approved successfully" : "Claim approved successfully"}
+                      </h4>
+                      <p className="mt-2 max-w-md text-sm text-white/50">
+                        {preparedAction.kind === "tally"
+                          ? "Your hidden positions have been submitted into the private tally flow."
+                          : "Your winning commitment has been claimed onchain and your receipt is ready."}
+                      </p>
+
+                      <div className="mt-6 w-full max-w-2xl rounded-2xl border border-white/8 bg-black/20 p-4 text-left">
+                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/30">
+                          {actionTxHashes.length === 1 ? "Transaction Hash" : "Transaction Hashes"}
+                        </p>
+                        <div className="mt-2 space-y-2">
+                          {actionTxHashes.map((hash) => (
+                            <p key={hash} className="text-sm font-mono text-white break-all">{hash}</p>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="mt-5 flex flex-col gap-3 sm:flex-row">
+                        {actionTxHashes[0] ? (
+                          <a
+                            href={explorerTransactionUrl(actionTxHashes[0])}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="flex h-11 items-center justify-center gap-2 rounded-xl border border-emerald-400/20 bg-white px-5 text-[11px] font-black uppercase tracking-[0.18em] text-black transition-all hover:bg-emerald-50 active:scale-[0.99]"
+                          >
+                            View Explorer
+                            <ExternalLink className="h-3.5 w-3.5" />
+                          </a>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            resetActionReview();
+                          }}
+                          className="flex h-11 items-center justify-center rounded-xl border border-emerald-400/30 bg-emerald-500/10 px-5 text-[11px] font-black uppercase tracking-[0.18em] text-emerald-200 transition-all hover:bg-emerald-500/20 active:scale-[0.99]"
+                        >
+                          Done
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div>
+                      <p className="mb-2 text-[10px] font-black uppercase tracking-[0.22em] text-white/40">Review & Approve</p>
+                      <h3 className="text-lg font-black tracking-tight text-white">
+                        {preparedAction.kind === "tally"
+                          ? `Approve ${preparedAction.positions.length === 1 ? "1 tally" : `${preparedAction.positions.length} tallies`}`
+                          : `Approve ${preparedAction.positions.length === 1 ? "1 claim" : `${preparedAction.positions.length} claims`}`}
+                      </h3>
+                      <p className="mt-1 text-sm text-white/50">
+                        {preparedAction.kind === "tally"
+                          ? "Review the tally batch before signing on Stellar."
+                          : "Review the claim batch before signing on Stellar."}
+                      </p>
+                    </div>
+
+                    <div className="rounded-[24px] border border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.015))] p-4">
+                      <div className="grid grid-cols-2 gap-2.5">
+                        <div className="rounded-2xl border border-white/6 bg-black/20 p-3">
+                          <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/25">Market</p>
+                          <p className="mt-1.5 text-sm font-semibold text-white break-words">{marketQuestion(preparedAction.group)}</p>
+                        </div>
+                        <div className="rounded-2xl border border-white/6 bg-black/20 p-3">
+                          <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/25">
+                            {preparedAction.kind === "tally" ? "Workflow" : "Payout"}
+                          </p>
+                          <p className="mt-1.5 text-sm font-semibold text-white">
+                            {preparedAction.kind === "tally"
+                              ? `${preparedAction.newCount} new / ${preparedAction.retryCount} retry`
+                              : formatUsdc(preparedAction.totalPayout)}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    {actionReviewError ? (
+                      <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-4">
+                        <p className="text-[11px] text-red-300">{actionReviewError}</p>
+                      </div>
+                    ) : null}
+
+                    <div className="flex items-center justify-end gap-3">
+                      <button
+                        type="button"
+                        onClick={() => resetActionReview()}
+                        disabled={busyAction === `tally:${preparedAction.group.marketId}` || busyAction === `claim:${preparedAction.group.marketId}`}
+                        className="h-10 rounded-xl border border-white/10 px-5 text-[11px] font-black uppercase tracking-[0.18em] text-white/70 transition-colors hover:bg-white/[0.05] disabled:opacity-60"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleApproveActionReview()}
+                        disabled={busyAction === `tally:${preparedAction.group.marketId}` || busyAction === `claim:${preparedAction.group.marketId}`}
+                        className="h-10 rounded-xl bg-white px-5 text-[11px] font-black uppercase tracking-[0.18em] text-black transition-all hover:bg-violet-50 disabled:opacity-60"
+                      >
+                        {busyAction === `tally:${preparedAction.group.marketId}` || busyAction === `claim:${preparedAction.group.marketId}`
+                          ? "Submitting..."
+                          : preparedAction.kind === "tally"
+                            ? "Approve Tally"
+                            : "Approve Claim"}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </motion.div>
+          </div>
+        ) : null}
+      </AnimatePresence>
     </div>
   );
 }
