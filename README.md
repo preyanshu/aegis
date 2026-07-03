@@ -68,7 +68,7 @@ Generate a public reputation profile to showcase your proof-backed credentials. 
 | **Backend** | Node.js + Express |
 | **Database** | MongoDB |
 | **Oracle** | Reflector + Custom Oracle Conditions |
-| **Authentication** | Google OAuth |
+| **Authentication** | Privy + Google sign-in |
 
 
 ## Zero-Knowledge Architecture
@@ -200,10 +200,10 @@ stellar contract optimize --wasm contracts/blind_market/target/wasm32v1-none/rel
 ./scripts/generate-verifier.sh
 ```
 
-Expected frontend circuit artifacts:
+Expected frontend circuit artifacts and compiled proof assets:
 
 ```text
-frontend/public/circuits/{commit,claim,reputation}.json
+frontend/public/circuits/{commit,tally_update,tally_finalize,claim,reputation}.json
 ```
 
 ### Run The Stack
