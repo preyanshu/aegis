@@ -1,5 +1,8 @@
 # Aegis
 
+<img width="1861" height="986" alt="image" src="https://github.com/user-attachments/assets/f918c056-9718-4047-85f4-41ec05bdb010" />
+
+
 ## Overview
 
 **Aegis is the most private prediction market stack you can get.** Built around permanently private positions—even after market resolution—dynamic oracle settlement, 3–5 node Shamir MPC tallying, nullifier-protected claims, and portable proof-backed reputation. Private by design. Verifiable by default.
