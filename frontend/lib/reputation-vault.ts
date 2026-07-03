@@ -1,4 +1,5 @@
 import { fetchPublicProfile, upsertPublicProfile } from "@/lib/public-profile";
+import { profileBackendUrl } from "@/lib/profile-backend";
 import { loadSavedPositions } from "@/lib/blind-market";
 import type { BlindPositionRecord } from "@/lib/types";
 import type {
@@ -58,8 +59,6 @@ const SYNC_MODE_KEY_PREFIX = "aegis-reputation-sync-mode-v1:";
 const LOCAL_SNAPSHOT_KEY_PREFIX = "aegis-reputation-snapshot-v1:";
 const LEGACY_SYNC_MODE_KEY_PREFIX = "verdict-reputation-sync-mode-v1:";
 const LEGACY_LOCAL_SNAPSHOT_KEY_PREFIX = "verdict-reputation-snapshot-v1:";
-const BACKEND_BASE_URL = process.env.NEXT_PUBLIC_PROFILE_BACKEND_URL ?? "http://127.0.0.1:4003";
-
 function syncModeKey(walletAddress: string) {
   return `${SYNC_MODE_KEY_PREFIX}${walletAddress.toLowerCase()}`;
 }
@@ -312,7 +311,7 @@ async function readServerSnapshot(walletAddress: string): Promise<ReputationSnap
 }
 
 export async function fetchReputationVault(walletAddress: string): Promise<Omit<ReputationSnapshot, "profile"> | null> {
-  const response = await fetch(`/api/vault/${encodeURIComponent(walletAddress)}`, {
+  const response = await fetch(profileBackendUrl(`/vault/${encodeURIComponent(walletAddress)}`), {
     method: "GET",
     cache: "no-store",
   });
@@ -352,7 +351,7 @@ export async function fetchReputationVault(walletAddress: string): Promise<Omit<
 }
 
 export async function fetchAttestedRecords(walletAddress: string): Promise<AttestedReputationRecord[]> {
-  const response = await fetch(`${BACKEND_BASE_URL.replace(/\/$/, "")}/reputation-records/${encodeURIComponent(walletAddress)}`, {
+  const response = await fetch(profileBackendUrl(`/reputation-records/${encodeURIComponent(walletAddress)}`), {
     method: "GET",
     cache: "no-store",
   });
@@ -380,7 +379,7 @@ export async function attestClaimRecord(input: {
   witnessSalt: string;
   claimedAt: number;
 }) {
-  const response = await fetch(`${BACKEND_BASE_URL.replace(/\/$/, "")}/reputation/attest-claim`, {
+  const response = await fetch(profileBackendUrl("/reputation/attest-claim"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -396,7 +395,7 @@ export async function attestClaimRecord(input: {
 }
 
 export async function upsertReputationVault(snapshot: ReputationSnapshot) {
-  const response = await fetch("/api/vault/upsert", {
+  const response = await fetch(profileBackendUrl("/vault/upsert"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

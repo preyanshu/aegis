@@ -1,4 +1,5 @@
 import type { AttestedReputationRecord } from "@/lib/reputation";
+import { profileBackendUrl } from "@/lib/profile-backend";
 import type { BlindPositionRecord } from "@/lib/types";
 import type { StoredReputationCredential } from "@/lib/reputation-vault";
 
@@ -39,7 +40,7 @@ export function reputationSharePath(slug: string) {
 }
 
 export async function createReputationShare(input: ReputationShareInput): Promise<ReputationShareRecord> {
-  const response = await fetch("/api/reputation-shares", {
+  const response = await fetch(profileBackendUrl("/reputation-shares"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -57,7 +58,7 @@ export async function createReputationShare(input: ReputationShareInput): Promis
 }
 
 export async function fetchReputationShare(slug: string): Promise<ReputationShareRecord | null> {
-  const response = await fetch(`/api/reputation-shares/${encodeURIComponent(slug)}`, {
+  const response = await fetch(profileBackendUrl(`/reputation-shares/${encodeURIComponent(slug)}`), {
     method: "GET",
     cache: "no-store",
   });

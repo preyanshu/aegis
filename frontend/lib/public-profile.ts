@@ -1,3 +1,5 @@
+import { profileBackendUrl } from "@/lib/profile-backend";
+
 export type PublicProfile = {
   walletAddress: string;
   displayName: string;
@@ -18,14 +20,10 @@ export type PublicProfileUpsertInput = {
   bio?: string | null;
   syncMode?: "server" | "local";
   source?: string;
-};
-
-function profileApiUrl(path: string) {
-  return `/api/profile${path}`;
 }
 
 export async function fetchPublicProfile(walletAddress: string): Promise<PublicProfile | null> {
-  const response = await fetch(profileApiUrl(`/${encodeURIComponent(walletAddress)}`), {
+  const response = await fetch(profileBackendUrl(`/profiles/${encodeURIComponent(walletAddress)}`), {
     method: "GET",
     cache: "no-store",
   });
@@ -43,7 +41,7 @@ export async function fetchPublicProfile(walletAddress: string): Promise<PublicP
 }
 
 export async function upsertPublicProfile(input: PublicProfileUpsertInput): Promise<PublicProfile> {
-  const response = await fetch(profileApiUrl("/upsert"), {
+  const response = await fetch(profileBackendUrl("/profiles/upsert"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

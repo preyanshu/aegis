@@ -160,7 +160,7 @@ export default function Providers({ children }: { children: React.ReactNode }) {
         <PrivyProvider
             appId="cmh5eorlh00njkw0b5bzymlcv"
             config={{
-                loginMethods: ['wallet', 'google', 'email'],
+                loginMethods: ['google', 'email'],
                 appearance: {
                     theme: 'dark',
                     accentColor: '#a855f7', // violet-500

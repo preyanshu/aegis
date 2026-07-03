@@ -2,6 +2,7 @@
 
 import { Buffer } from "buffer";
 import type { User } from "@privy-io/react-auth";
+import { profileBackendUrl } from "@/lib/profile-backend";
 import {
   Address,
   Asset,
@@ -782,7 +783,7 @@ export async function submitTallySharesToBackend(input: {
   shareCommitmentRoot: string;
   packets: TallySharePacket[];
 }) {
-  const response = await fetch("/api/tally-shares", {
+  const response = await fetch(profileBackendUrl("/tally-shares"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
