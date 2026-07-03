@@ -167,7 +167,7 @@ export default function Providers({ children }: { children: React.ReactNode }) {
                     showWalletLoginFirst: false,
                 },
                 embeddedWallets: {
-                    showWalletUIs: true,
+                    showWalletUIs: false,
                 },
             }}
         >
