@@ -1,12 +1,5 @@
 # Aegis
 
-## Links
-
-| Item | Link |
-|------|------|
-| **Web App** | https://aegis.preyanshu.me |
-| **GitHub** | https://github.com/preyanshu/aegis |
-| **Aegis Blind Market Soroban Contract (Stellar Testnet)** | https://stellar.expert/explorer/testnet/contract/CCQYAD5J6WBTYRWPHH5VKTZNH27CHUC6DYJYWT2RUR7Y3SVUMRIHOIZ4 |
 
 <img width="1861" height="986" alt="image" src="https://github.com/user-attachments/assets/f918c056-9718-4047-85f4-41ec05bdb010" />
 
@@ -15,7 +8,16 @@
 
 **Aegis is the most private prediction market stack you can get.** Built around permanently private positions—even after market resolution—dynamic oracle settlement, 3–5 node Shamir MPC tallying, nullifier-protected claims, and portable proof-backed reputation. Private by design. Verifiable by default.
 
-<img width="1861" height="986" alt="image" src="https://github.com/user-attachments/assets/681b2d09-a6c7-4826-818a-4b2d283b12bb" />
+<img width="1866" height="991" alt="image" src="https://github.com/user-attachments/assets/79beeadc-2bac-43cb-b098-6cf24bdfb1d0" />
+
+
+## Links
+
+| Item | Link |
+|------|------|
+| **Web App** | https://aegis.preyanshu.me |
+| **GitHub** | https://github.com/preyanshu/aegis |
+| **Aegis Contract** | https://stellar.expert/explorer/testnet/contract/CCQYAD5J6WBTYRWPHH5VKTZNH27CHUC6DYJYWT2RUR7Y3SVUMRIHOIZ4 |
 
 
 ## Why Aegis?
